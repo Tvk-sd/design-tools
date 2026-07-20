@@ -1,8 +1,7 @@
 <!doctype html>
 <!--
   Kinetic Type — tool #1 of the Design Tools playground.
-  Four variants on this one page, switchable via ?variant= / the bottom bar / arrow keys.
-  Variant D's warpField() is intentionally left boring — that one is yours to write.
+  Three variants on this one page, switchable via ?variant= / the bottom bar / arrow keys.
 -->
 <html lang="en">
 <head>
@@ -28,6 +27,23 @@
     border: 1px solid #444; background: #111; color: #eee; font-size: 12px;
   }
 
+  /* ink & paper — shared color block, identical across tools */
+  #panel .swatches { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+  #panel .swatches input[type=color] {
+    flex: 1; height: 26px; padding: 1px; border: 1px solid #444;
+    border-radius: 6px; background: #111; cursor: pointer;
+  }
+  #panel .swatches button {
+    border: 1px solid #444; background: #111; color: #eee;
+    border-radius: 6px; height: 26px; width: 30px; cursor: pointer;
+  }
+  #panel .presets { display: flex; gap: 5px; margin-top: 8px; }
+  #panel .presets button {
+    flex: 1; height: 16px; padding: 0; border: 1px solid #444; border-radius: 4px;
+    overflow: hidden; display: flex; cursor: pointer; background: none;
+  }
+  #panel .presets span { flex: 1; }
+
   /* prototype switcher — deliberately NOT styled like the design being judged */
   #switcher {
     position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 10;
@@ -51,6 +67,13 @@
   <label>Speed <input type="range" id="speed" min="0" max="3" step="0.05" value="1" /></label>
   <label>Density <input type="range" id="density" min="4" max="60" step="1" value="24" /></label>
   <label>Amplitude <input type="range" id="amp" min="0" max="1" step="0.01" value="0.5" /></label>
+  <label>Colors — ink ⇄ paper</label>
+  <div class="swatches">
+    <input type="color" id="ink" value="#000000" title="Ink" />
+    <button id="swap" title="Swap ink and paper">⇄</button>
+    <input type="color" id="paper" value="#ffffff" title="Paper" />
+  </div>
+  <div class="presets" id="presets"></div>
 </div>
 
 <div id="switcher">
@@ -78,14 +101,56 @@ document.getElementById('word').addEventListener('input', e => P.word = e.target
 for (const k of ['speed', 'density', 'amp'])
   document.getElementById(k).addEventListener('input', e => P[k] = +e.target.value);
 
+/* ------------------------------ colors --------------------------
+   Ink & Paper — every tool in this playground is two colors: the
+   mark (ink) and the ground (paper). Both live in the URL so a good
+   combo is a bookmarkable link. Presets are shared playground-wide.
+---------------------------------------------------------------- */
+const PRESETS = [
+  { name: 'Print',     paper: '#ffffff', ink: '#000000' },
+  { name: 'Blueprint', paper: '#0b2447', ink: '#a9d6ff' },
+  { name: 'Riso Red',  paper: '#f7f1e1', ink: '#ff4b2e' },
+  { name: 'Terminal',  paper: '#0a0f0a', ink: '#33ff66' },
+  { name: 'Butter',    paper: '#ffd966', ink: '#33200a' },
+  { name: 'Midnight',  paper: '#000000', ink: '#9d5cff' },
+];
+const C = { ink: '#000000', paper: '#ffffff' };
+{
+  const q = new URLSearchParams(location.search);
+  for (const k of ['ink', 'paper'])
+    if (/^[0-9a-fA-F]{6}$/.test(q.get(k) || '')) C[k] = '#' + q.get(k);
+}
+const inkEl = document.getElementById('ink'), paperEl = document.getElementById('paper');
+function setColors(ink, paper) {
+  C.ink = ink; C.paper = paper;
+  inkEl.value = ink; paperEl.value = paper;
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('ink', ink.slice(1));
+    url.searchParams.set('paper', paper.slice(1));
+    history.replaceState(null, '', url);
+  } catch {}
+}
+inkEl.addEventListener('input', e => setColors(e.target.value, C.paper));
+paperEl.addEventListener('input', e => setColors(C.ink, e.target.value));
+document.getElementById('swap').onclick = () => setColors(C.paper, C.ink);
+for (const p of PRESETS) {
+  const b = document.createElement('button');
+  b.title = p.name;
+  b.innerHTML = `<span style="background:${p.paper}"></span><span style="background:${p.ink}"></span>`;
+  b.onclick = () => setColors(p.ink, p.paper);
+  document.getElementById('presets').appendChild(b);
+}
+setColors(C.ink, C.paper);
+
 /* ---------------------------------------------------------------
    VARIANT A — text-grid warp ("BASIC SYSTEMS" look)
    The word repeats in rows; each row is horizontally squeezed or
    stretched by a sine field, so wave silhouettes emerge from type.
 ---------------------------------------------------------------- */
 function variantA(t) {
-  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = '#000';
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = C.ink;
   const rows = Math.round(P.density * 1.6);
   const rowH = H / rows;
   ctx.font = `700 ${rowH * 0.85}px ui-sans-serif, sans-serif`;
@@ -113,8 +178,8 @@ function variantA(t) {
    with 'difference' blending so it inverts whatever it overlaps.
 ---------------------------------------------------------------- */
 function variantB(t) {
-  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = '#fff';
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = C.ink;
   const bars = Math.round(P.density * 1.5);
   const cell = H / bars;
   for (let i = 0; i < bars; i++) {
@@ -125,6 +190,9 @@ function variantB(t) {
   }
   ctx.save();
   ctx.globalCompositeOperation = 'difference';
+  // stays white: in difference mode white yields the complement of
+  // whatever it overlaps — with a colored duo the text picks up a
+  // third color for free where it crosses the stripes
   ctx.fillStyle = '#fff';
   const size = Math.min(W / (P.word.length * 0.62), H * 0.42);
   ctx.font = `900 ${size}px ui-sans-serif, sans-serif`;
@@ -144,14 +212,14 @@ const off = document.createElement('canvas');
 const offCtx = off.getContext('2d');
 function variantC(t) {
   off.width = W; off.height = H;
-  offCtx.fillStyle = '#000'; offCtx.fillRect(0, 0, W, H);
-  offCtx.fillStyle = '#fff';
+  offCtx.fillStyle = C.paper; offCtx.fillRect(0, 0, W, H);
+  offCtx.fillStyle = C.ink;
   const size = Math.min(W / (P.word.length * 0.58), H * 0.5);
   offCtx.font = `900 ${size}px ui-sans-serif, sans-serif`;
   offCtx.textAlign = 'center'; offCtx.textBaseline = 'middle';
   offCtx.fillText(P.word, W / 2, H / 2);
 
-  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, W, H);
   const slices = Math.round(P.density * 8);
   const sw = W / slices;
   for (let i = 0; i < slices; i++) {
@@ -164,46 +232,11 @@ function variantC(t) {
   }
 }
 
-/* ---------------------------------------------------------------
-   VARIANT D — YOURS.
-   A grid of squares is drawn for you; each square asks warpField()
-   how big it should be (0..1) at its position and time. Right now
-   it returns a boring constant. Replace the body with your own
-   oscillator mix and watch what emerges. Ideas to steal:
-     - Math.sin(x * freq + t)                    → vertical wave bands
-     - Math.sin(x * a + t) * Math.sin(y * b - t) → interference grid
-     - distance from centre: Math.hypot(x - 0.5, y - 0.5) → ripples
-   x and y arrive normalised 0..1; p.amp / p.speed are the sliders.
----------------------------------------------------------------- */
-function warpField(x, y, t, p) {
-  // TODO(Till): make this interesting — mix 2-3 oscillators, return 0..1
-  return 0.5;
-}
-
-function variantD(t) {
-  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = '#fff';
-  ctx.globalCompositeOperation = 'difference';
-  const cols = Math.round(P.density * 1.5);
-  const cell = W / cols;
-  const rows = Math.ceil(H / cell);
-  for (let gy = 0; gy < rows; gy++) {
-    for (let gx = 0; gx < cols; gx++) {
-      const v = warpField(gx / cols, gy / rows, t, P);
-      const s = Math.max(0, Math.min(1.6, v)) * cell * (0.4 + P.amp * 1.4);
-      const cx = (gx + 0.5) * cell, cy = (gy + 0.5) * cell;
-      ctx.fillRect(cx - s / 2, cy - s / 2, s, s);
-    }
-  }
-  ctx.globalCompositeOperation = 'source-over';
-}
-
 /* --------------------------- switcher --------------------------- */
 const VARIANTS = [
   { key: 'A', name: 'Text-grid warp', fn: variantA },
   { key: 'B', name: 'Stripes × difference', fn: variantB },
   { key: 'C', name: 'Sliced liquid type', fn: variantC },
-  { key: 'D', name: 'Your warp field', fn: variantD },
 ];
 let current = Math.max(0, VARIANTS.findIndex(v =>
   v.key === new URLSearchParams(location.search).get('variant')));

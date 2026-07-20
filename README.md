@@ -24,6 +24,12 @@ tools/<name>/index.html   one self-contained tool per folder
 2. Describe the effect you want to an AI the way rohan does — name the geometry (grid / stripes / slices), the oscillators, the blend mode, and which parameters get sliders.
 3. Add one `<li>` to the gallery in `index.html`.
 
+## Ink & Paper
+
+Every tool shares the same two-color system: **ink** (the mark) and **paper** (the ground). Each panel has two swatches, a ⇄ swap button, and six preset duos (Print, Blueprint, Riso Red, Terminal, Butter, Midnight). Colors persist in the URL (`?ink=ff4b2e&paper=f7f1e1`) alongside `?variant=`, so a good combo is a bookmarkable link. New tools should copy the color block from any existing tool.
+
 ## Tools
 
-- **kinetic-type** — text warped by stacked sine oscillators. 4 variants (`?variant=A|B|C|D`, arrow keys to cycle). Variant D's `warpField()` is intentionally left as a stub — write your own oscillator mix there.
+- **kinetic-type** — text warped by stacked sine oscillators. 3 variants (`?variant=A|B|C`, arrow keys to cycle).
+- **flow-field-ink** — particles drifting through a vector field, leaving ink trails. 3 fields (`?variant=A|B|C`): silk, vortex, turbulence. Click or `C` to wipe the ink; fade at 0 accumulates forever (poster mode).
+- **halftone** — drop any image, get it rasterized by brightness. 3 renderers (`?variant=A|B|C`): dots, lines, ASCII. Sliders for cell size, contrast, angle; right-click the canvas to save the result.
