@@ -1,0 +1,326 @@
+<!doctype html>
+<!--
+  Halftone Imager — tool #3 of the Design Tools playground.
+  Drop any image on the page; it gets rasterized into dots, lines or ASCII
+  whose weight follows brightness. Three renderers, switchable via
+  ?variant= / the bottom bar / arrow keys. Right-click the canvas to save.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Halftone Imager — prototype</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #000; overflow: hidden; font-family: ui-sans-serif, system-ui, sans-serif; }
+  canvas { display: block; }
+
+  /* control panel */
+  #panel {
+    position: fixed; top: 16px; left: 16px; z-index: 10;
+    background: rgba(20,20,20,.85); color: #eee; padding: 14px 16px;
+    border-radius: 10px; font-size: 12px; width: 220px;
+    backdrop-filter: blur(6px);
+  }
+  #panel label { display: block; margin-top: 10px; color: #999; }
+  #panel input[type=range] { width: 100%; }
+  #panel .check { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: #999; }
+  #panel .check input { margin: 0; }
+  #panel button {
+    margin-top: 12px; width: 100%; padding: 6px; border-radius: 6px;
+    border: 1px solid #444; background: #111; color: #eee; font-size: 12px; cursor: pointer;
+  }
+  #panel .hint { margin-top: 10px; color: #666; }
+
+  /* ink & paper — shared color block, identical across tools
+     (overrides the generic #panel button rule above) */
+  #panel .swatches { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+  #panel .swatches input[type=color] {
+    flex: 1; height: 26px; padding: 1px; border: 1px solid #444;
+    border-radius: 6px; background: #111; cursor: pointer;
+  }
+  #panel .swatches button {
+    margin-top: 0; width: 30px; height: 26px; padding: 0;
+    border: 1px solid #444; background: #111; color: #eee;
+    border-radius: 6px; cursor: pointer;
+  }
+  #panel .presets { display: flex; gap: 5px; margin-top: 8px; }
+  #panel .presets button {
+    flex: 1; margin-top: 0; width: auto; height: 16px; padding: 0;
+    border: 1px solid #444; border-radius: 4px;
+    overflow: hidden; display: flex; cursor: pointer; background: none;
+  }
+  #panel .presets span { flex: 1; }
+
+  /* prototype switcher — deliberately NOT styled like the design being judged */
+  #switcher {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 10;
+    display: flex; align-items: center; gap: 12px;
+    background: #fff; color: #000; border-radius: 999px; padding: 8px 16px;
+    font-size: 13px; font-weight: 600; box-shadow: 0 4px 20px rgba(0,0,0,.5);
+    user-select: none;
+  }
+  #switcher button {
+    border: 0; background: none; font-size: 16px; cursor: pointer; padding: 2px 6px;
+  }
+  #switcher span { min-width: 180px; text-align: center; }
+
+  /* drop highlight */
+  body.dragging::after {
+    content: 'drop image';
+    position: fixed; inset: 12px; z-index: 20;
+    display: flex; align-items: center; justify-content: center;
+    border: 2px dashed #fff; border-radius: 16px;
+    background: rgba(0,0,0,.6); color: #fff;
+    font-size: 24px; font-weight: 700; letter-spacing: .1em;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="panel">
+  <strong id="variant-title"></strong>
+  <label>Cell size <input type="range" id="cell" min="4" max="40" step="1" value="10" /></label>
+  <label>Contrast <input type="range" id="gamma" min="0.3" max="3" step="0.05" value="1" /></label>
+  <label>Angle <input type="range" id="angle" min="0" max="90" step="1" value="0" /></label>
+  <label class="check"><input type="checkbox" id="invert" /> Invert</label>
+  <label>Colors — ink ⇄ paper</label>
+  <div class="swatches">
+    <input type="color" id="ink" value="#000000" title="Ink" />
+    <button id="swap" title="Swap ink and paper">⇄</button>
+    <input type="color" id="paper" value="#ffffff" title="Paper" />
+  </div>
+  <div class="presets" id="presets"></div>
+  <button id="browse">Choose image…</button>
+  <input type="file" id="file" accept="image/*" hidden />
+  <div class="hint">drag an image anywhere · right-click canvas to save</div>
+</div>
+
+<div id="switcher">
+  <button id="prev">←</button><span id="label"></span><button id="next">→</button>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H, dpr;
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  render();
+}
+
+// live params from the panel — every change re-renders (no animation loop)
+const P = { cell: 10, gamma: 1, angle: 0, invert: false };
+for (const k of ['cell', 'gamma', 'angle'])
+  document.getElementById(k).addEventListener('input', e => { P[k] = +e.target.value; render(); });
+document.getElementById('invert').addEventListener('input', e => { P.invert = e.target.checked; render(); });
+
+/* ------------------------------ colors --------------------------
+   Ink & Paper — every tool in this playground is two colors: the
+   mark (ink) and the ground (paper). Both live in the URL so a good
+   combo is a bookmarkable link. Presets are shared playground-wide.
+---------------------------------------------------------------- */
+const PRESETS = [
+  { name: 'Print',     paper: '#ffffff', ink: '#000000' },
+  { name: 'Blueprint', paper: '#0b2447', ink: '#a9d6ff' },
+  { name: 'Riso Red',  paper: '#f7f1e1', ink: '#ff4b2e' },
+  { name: 'Terminal',  paper: '#0a0f0a', ink: '#33ff66' },
+  { name: 'Butter',    paper: '#ffd966', ink: '#33200a' },
+  { name: 'Midnight',  paper: '#000000', ink: '#9d5cff' },
+];
+const C = { ink: '#000000', paper: '#ffffff' };
+{
+  const q = new URLSearchParams(location.search);
+  for (const k of ['ink', 'paper'])
+    if (/^[0-9a-fA-F]{6}$/.test(q.get(k) || '')) C[k] = '#' + q.get(k);
+}
+const inkEl = document.getElementById('ink'), paperEl = document.getElementById('paper');
+function setColors(ink, paper) {
+  C.ink = ink; C.paper = paper;
+  inkEl.value = ink; paperEl.value = paper;
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('ink', ink.slice(1));
+    url.searchParams.set('paper', paper.slice(1));
+    history.replaceState(null, '', url);
+  } catch {}
+  if (W) render();
+}
+inkEl.addEventListener('input', e => setColors(e.target.value, C.paper));
+paperEl.addEventListener('input', e => setColors(C.ink, e.target.value));
+document.getElementById('swap').onclick = () => setColors(C.paper, C.ink);
+for (const p of PRESETS) {
+  const b = document.createElement('button');
+  b.title = p.name;
+  b.innerHTML = `<span style="background:${p.paper}"></span><span style="background:${p.ink}"></span>`;
+  b.onclick = () => setColors(p.ink, p.paper);
+  document.getElementById('presets').appendChild(b);
+}
+setColors(C.ink, C.paper);
+
+/* ----------------------------- source ---------------------------
+   The image lives on an offscreen canvas. Until one is dropped, a
+   generated placeholder (gradient blobs + hint text) stands in — so
+   the halftone effect is visible immediately.
+---------------------------------------------------------------- */
+let source = null; // <img> or canvas
+
+function placeholder() {
+  const c = document.createElement('canvas');
+  c.width = 1200; c.height = 800;
+  const g = c.getContext('2d');
+  g.fillStyle = '#666'; g.fillRect(0, 0, c.width, c.height);
+  for (const [x, y, r, shade] of [
+    [300, 250, 380, '#eee'], [900, 550, 420, '#111'],
+    [1050, 150, 260, '#ccc'], [150, 650, 300, '#333'],
+  ]) {
+    const grad = g.createRadialGradient(x, y, 0, x, y, r);
+    grad.addColorStop(0, shade); grad.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = grad;
+    g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+  }
+  g.fillStyle = '#000';
+  g.font = '900 130px ui-sans-serif, sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText('DROP AN', c.width / 2, c.height / 2 - 80);
+  g.fillText('IMAGE', c.width / 2, c.height / 2 + 80);
+  return c;
+}
+
+function loadFile(file) {
+  if (!file || !file.type.startsWith('image/')) return;
+  const img = new Image();
+  img.onload = () => { source = img; URL.revokeObjectURL(img.src); render(); };
+  img.src = URL.createObjectURL(file);
+}
+
+document.getElementById('browse').onclick = () => document.getElementById('file').click();
+document.getElementById('file').addEventListener('change', e => loadFile(e.target.files[0]));
+window.addEventListener('dragover', e => { e.preventDefault(); document.body.classList.add('dragging'); });
+window.addEventListener('dragleave', e => { if (!e.relatedTarget) document.body.classList.remove('dragging'); });
+window.addEventListener('drop', e => {
+  e.preventDefault();
+  document.body.classList.remove('dragging');
+  loadFile(e.dataTransfer.files[0]);
+});
+
+/* ---------------------------- sampling ---------------------------
+   The source is drawn cover-fit onto a canvas the size of the halftone
+   grid (one pixel per cell), then read back once — so brightness
+   sampling costs one getImageData no matter the image size.
+---------------------------------------------------------------- */
+const sampler = document.createElement('canvas');
+function sampleGrid(cols, rows) {
+  sampler.width = cols; sampler.height = rows;
+  const g = sampler.getContext('2d');
+  const sw = source.width || source.videoWidth, sh = source.height;
+  const scale = Math.max(cols / sw, rows / sh); // cover fit
+  const dw = sw * scale, dh = sh * scale;
+  g.drawImage(source, (cols - dw) / 2, (rows - dh) / 2, dw, dh);
+  const data = g.getImageData(0, 0, cols, rows).data;
+  const grid = new Float64Array(cols * rows);
+  for (let i = 0; i < grid.length; i++) {
+    const b = (0.2126 * data[i * 4] + 0.7152 * data[i * 4 + 1] + 0.0722 * data[i * 4 + 2]) / 255;
+    let d = 1 - Math.pow(b, P.gamma); // darkness 0..1, contrast-shaped
+    grid[i] = P.invert ? 1 - d : d;
+  }
+  return grid;
+}
+
+/* --------------------------- renderers --------------------------- */
+
+/* VARIANT A — dots: classic newspaper screen, darker = bigger dot */
+function renderDots(grid, cols, rows, cell) {
+  ctx.fillStyle = C.ink;
+  ctx.beginPath();
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const rad = grid[r * cols + c] * cell * 0.65;
+    if (rad < 0.3) continue;
+    const x = (c + 0.5) * cell, y = (r + 0.5) * cell;
+    ctx.moveTo(x + rad, y);
+    ctx.arc(x, y, rad, 0, Math.PI * 2);
+  }
+  ctx.fill();
+}
+
+/* VARIANT B — lines: engraving look, darker = thicker stroke.
+   The whole canvas is rotated once, then rows are drawn as short
+   dashes whose thickness follows the darkness under them. */
+function renderLines(grid, cols, rows, cell) {
+  ctx.save();
+  ctx.translate(W / 2, H / 2);
+  ctx.rotate(P.angle * Math.PI / 180);
+  ctx.translate(-W / 2, -H / 2);
+  ctx.fillStyle = C.ink;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const h = grid[r * cols + c] * cell * 0.9;
+    if (h < 0.3) continue;
+    ctx.fillRect(c * cell - cell, (r + 0.5) * cell - h / 2, cell * 2, h);
+  }
+  ctx.restore();
+}
+
+/* VARIANT C — ASCII: darkness mapped onto a character ramp */
+const RAMP = ' .:-=+*#%@';
+function renderAscii(grid, cols, rows, cell) {
+  ctx.fillStyle = C.ink;
+  ctx.font = `700 ${cell * 1.1}px ui-monospace, monospace`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const ch = RAMP[Math.min(RAMP.length - 1, Math.floor(grid[r * cols + c] * RAMP.length))];
+    if (ch === ' ') continue;
+    ctx.fillText(ch, (c + 0.5) * cell, (r + 0.5) * cell);
+  }
+}
+
+function render() {
+  if (!source) source = placeholder();
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, W, H);
+  const cell = P.cell;
+  const cols = Math.ceil(W / cell), rows = Math.ceil(H / cell);
+  const grid = sampleGrid(cols, rows);
+  VARIANTS[current].fn(grid, cols, rows, cell);
+}
+
+/* --------------------------- switcher --------------------------- */
+const VARIANTS = [
+  { key: 'A', name: 'Dots', fn: renderDots },
+  { key: 'B', name: 'Lines', fn: renderLines },
+  { key: 'C', name: 'ASCII', fn: renderAscii },
+];
+let current = Math.max(0, VARIANTS.findIndex(v =>
+  v.key === new URLSearchParams(location.search).get('variant')));
+
+function setVariant(i) {
+  current = (i + VARIANTS.length) % VARIANTS.length;
+  const v = VARIANTS[current];
+  document.getElementById('label').textContent = `${v.key} — ${v.name}`;
+  document.getElementById('variant-title').textContent = v.name;
+  try { // history API is unavailable on some file:// setups — switching still works
+    const url = new URL(location.href);
+    url.searchParams.set('variant', v.key);
+    history.replaceState(null, '', url);
+  } catch {}
+  render();
+}
+document.getElementById('prev').onclick = () => setVariant(current - 1);
+document.getElementById('next').onclick = () => setVariant(current + 1);
+window.addEventListener('keydown', e => {
+  if (/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
+  if (e.key === 'ArrowLeft') setVariant(current - 1);
+  if (e.key === 'ArrowRight') setVariant(current + 1);
+});
+
+window.addEventListener('resize', resize);
+resize();
+setVariant(current);
+</script>
+</body>
+</html>

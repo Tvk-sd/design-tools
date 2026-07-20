@@ -1,0 +1,267 @@
+<!doctype html>
+<!--
+  Flow-Field Ink — tool #2 of the Design Tools playground.
+  Particles drift through a vector field and leave ink trails.
+  Three fields on this one page, switchable via ?variant= / the bottom bar / arrow keys.
+  Click the canvas (or press C) to wipe the ink and start over.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Flow-Field Ink — prototype</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #000; overflow: hidden; font-family: ui-sans-serif, system-ui, sans-serif; }
+  canvas { display: block; cursor: crosshair; }
+
+  /* control panel */
+  #panel {
+    position: fixed; top: 16px; left: 16px; z-index: 10;
+    background: rgba(20,20,20,.85); color: #eee; padding: 14px 16px;
+    border-radius: 10px; font-size: 12px; width: 220px;
+    backdrop-filter: blur(6px);
+  }
+  #panel label { display: block; margin-top: 10px; color: #999; }
+  #panel input[type=range] { width: 100%; }
+  #panel .hint { margin-top: 12px; color: #666; }
+
+  /* ink & paper — shared color block, identical across tools */
+  #panel .swatches { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+  #panel .swatches input[type=color] {
+    flex: 1; height: 26px; padding: 1px; border: 1px solid #444;
+    border-radius: 6px; background: #111; cursor: pointer;
+  }
+  #panel .swatches button {
+    border: 1px solid #444; background: #111; color: #eee;
+    border-radius: 6px; height: 26px; width: 30px; cursor: pointer;
+  }
+  #panel .presets { display: flex; gap: 5px; margin-top: 8px; }
+  #panel .presets button {
+    flex: 1; height: 16px; padding: 0; border: 1px solid #444; border-radius: 4px;
+    overflow: hidden; display: flex; cursor: pointer; background: none;
+  }
+  #panel .presets span { flex: 1; }
+
+  /* prototype switcher — deliberately NOT styled like the design being judged */
+  #switcher {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 10;
+    display: flex; align-items: center; gap: 12px;
+    background: #fff; color: #000; border-radius: 999px; padding: 8px 16px;
+    font-size: 13px; font-weight: 600; box-shadow: 0 4px 20px rgba(0,0,0,.5);
+    user-select: none;
+  }
+  #switcher button {
+    border: 0; background: none; font-size: 16px; cursor: pointer; padding: 2px 6px;
+  }
+  #switcher span { min-width: 180px; text-align: center; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="panel">
+  <strong id="variant-title"></strong>
+  <label>Field scale <input type="range" id="scale" min="1" max="12" step="0.1" value="4" /></label>
+  <label>Speed <input type="range" id="speed" min="0.2" max="4" step="0.05" value="1.5" /></label>
+  <label>Particles <input type="range" id="count" min="200" max="6000" step="100" value="2500" /></label>
+  <label>Fade <input type="range" id="fade" min="0" max="0.1" step="0.002" value="0.02" /></label>
+  <label>Colors — ink ⇄ paper</label>
+  <div class="swatches">
+    <input type="color" id="ink" value="#ffffff" title="Ink" />
+    <button id="swap" title="Swap ink and paper">⇄</button>
+    <input type="color" id="paper" value="#000000" title="Paper" />
+  </div>
+  <div class="presets" id="presets"></div>
+  <div class="hint">click / C — clear the ink<br>changing ink mid-run layers colors</div>
+</div>
+
+<div id="switcher">
+  <button id="prev">←</button><span id="label"></span><button id="next">→</button>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H, dpr;
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  clearInk();
+}
+
+// live params from the panel
+const P = { scale: 4, speed: 1.5, count: 2500, fade: 0.02 };
+for (const k of ['scale', 'speed', 'count', 'fade'])
+  document.getElementById(k).addEventListener('input', e => P[k] = +e.target.value);
+
+/* ------------------------------ colors --------------------------
+   Ink & Paper — every tool in this playground is two colors: the
+   mark (ink) and the ground (paper). Both live in the URL so a good
+   combo is a bookmarkable link. Presets are shared playground-wide.
+   Changing INK doesn't wipe the canvas — new strokes just land in
+   the new color, so you can layer a multi-color poster by switching
+   ink mid-run. Changing PAPER has to repaint, so it clears.
+---------------------------------------------------------------- */
+const PRESETS = [
+  { name: 'Print',     paper: '#ffffff', ink: '#000000' },
+  { name: 'Blueprint', paper: '#0b2447', ink: '#a9d6ff' },
+  { name: 'Riso Red',  paper: '#f7f1e1', ink: '#ff4b2e' },
+  { name: 'Terminal',  paper: '#0a0f0a', ink: '#33ff66' },
+  { name: 'Butter',    paper: '#ffd966', ink: '#33200a' },
+  { name: 'Midnight',  paper: '#000000', ink: '#9d5cff' },
+];
+const C = { ink: '#ffffff', paper: '#000000' };
+{
+  const q = new URLSearchParams(location.search);
+  for (const k of ['ink', 'paper'])
+    if (/^[0-9a-fA-F]{6}$/.test(q.get(k) || '')) C[k] = '#' + q.get(k);
+}
+const inkEl = document.getElementById('ink'), paperEl = document.getElementById('paper');
+function setColors(ink, paper) {
+  const paperChanged = paper !== C.paper;
+  C.ink = ink; C.paper = paper;
+  inkEl.value = ink; paperEl.value = paper;
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('ink', ink.slice(1));
+    url.searchParams.set('paper', paper.slice(1));
+    history.replaceState(null, '', url);
+  } catch {}
+  if (paperChanged && W) clearInk();
+}
+inkEl.addEventListener('input', e => setColors(e.target.value, C.paper));
+paperEl.addEventListener('input', e => setColors(C.ink, e.target.value));
+document.getElementById('swap').onclick = () => setColors(C.paper, C.ink);
+for (const p of PRESETS) {
+  const b = document.createElement('button');
+  b.title = p.name;
+  b.innerHTML = `<span style="background:${p.paper}"></span><span style="background:${p.ink}"></span>`;
+  b.onclick = () => setColors(p.ink, p.paper);
+  document.getElementById('presets').appendChild(b);
+}
+setColors(C.ink, C.paper);
+
+function withAlpha(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`;
+}
+
+/* ---------------------------------------------------------------
+   FIELDS — each returns a direction (radians) for a point.
+   x and y arrive normalised 0..1, t is seconds.
+---------------------------------------------------------------- */
+
+/* VARIANT A — silk: two broad sine layers, long smooth swirls */
+function fieldSilk(x, y, t) {
+  return Math.PI * (
+    Math.sin(x * P.scale + t * 0.25) +
+    Math.sin(y * P.scale - t * 0.18)
+  );
+}
+
+/* VARIANT B — vortex: tangential orbit around the centre with a
+   radial wobble, so the ink coils into a breathing spiral */
+function fieldVortex(x, y, t) {
+  const dx = x - 0.5, dy = y - 0.5;
+  const orbit = Math.atan2(dy, dx) + Math.PI / 2;
+  const ripple = Math.sin(Math.hypot(dx, dy) * P.scale * 8 - t * 0.9);
+  return orbit + ripple * 0.9;
+}
+
+/* VARIANT C — turbulence: sines nested inside sines at
+   incommensurate frequencies — cheap noise, marbled-paper look */
+function fieldTurbulence(x, y, t) {
+  return Math.PI * (
+    Math.sin(x * P.scale * 1.7 + Math.sin(y * P.scale * 1.3 + t * 0.4)) +
+    Math.sin(y * P.scale * 2.3 + Math.sin(x * P.scale * 1.1 - t * 0.3))
+  );
+}
+
+/* --------------------------- particles -------------------------- */
+const particles = [];
+function spawn(p) {
+  p = p || {};
+  p.x = Math.random() * W; p.y = Math.random() * H;
+  p.life = 60 + Math.random() * 240; // frames until forced respawn
+  return p;
+}
+
+function clearInk() {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, W, H);
+}
+
+function step(t) {
+  // top up / trim the pool to match the slider
+  while (particles.length < P.count) particles.push(spawn());
+  particles.length = Math.min(particles.length, P.count);
+
+  // fade 0 = ink accumulates forever (poster mode)
+  if (P.fade > 0) {
+    ctx.fillStyle = withAlpha(C.paper, P.fade);
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  ctx.strokeStyle = withAlpha(C.ink, 0.35);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  const field = VARIANTS[current].field;
+  for (const p of particles) {
+    const a = field(p.x / W, p.y / H, t);
+    const nx = p.x + Math.cos(a) * P.speed;
+    const ny = p.y + Math.sin(a) * P.speed;
+    ctx.moveTo(p.x, p.y); ctx.lineTo(nx, ny);
+    p.x = nx; p.y = ny;
+    if (--p.life < 0 || nx < 0 || nx > W || ny < 0 || ny > H) spawn(p);
+  }
+  ctx.stroke();
+}
+
+/* --------------------------- switcher --------------------------- */
+const VARIANTS = [
+  { key: 'A', name: 'Silk', field: fieldSilk },
+  { key: 'B', name: 'Vortex', field: fieldVortex },
+  { key: 'C', name: 'Turbulence', field: fieldTurbulence },
+];
+let current = Math.max(0, VARIANTS.findIndex(v =>
+  v.key === new URLSearchParams(location.search).get('variant')));
+
+function setVariant(i) {
+  current = (i + VARIANTS.length) % VARIANTS.length;
+  const v = VARIANTS[current];
+  document.getElementById('label').textContent = `${v.key} — ${v.name}`;
+  document.getElementById('variant-title').textContent = v.name;
+  clearInk();
+  try { // history API is unavailable on some file:// setups — switching still works
+    const url = new URL(location.href);
+    url.searchParams.set('variant', v.key);
+    history.replaceState(null, '', url);
+  } catch {}
+}
+document.getElementById('prev').onclick = () => setVariant(current - 1);
+document.getElementById('next').onclick = () => setVariant(current + 1);
+canvas.addEventListener('click', clearInk);
+window.addEventListener('keydown', e => {
+  if (/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
+  if (e.key === 'ArrowLeft') setVariant(current - 1);
+  if (e.key === 'ArrowRight') setVariant(current + 1);
+  if (e.key === 'c' || e.key === 'C') clearInk();
+});
+
+window.addEventListener('resize', resize);
+resize();
+setVariant(current);
+
+/* -------------------------- render loop ------------------------- */
+let start = performance.now();
+(function frame(now) {
+  step((now - start) / 1000);
+  requestAnimationFrame(frame);
+})(start);
+</script>
+</body>
+</html>
