@@ -1,0 +1,277 @@
+<!doctype html>
+<!--
+  Reaction-Diffusion — tool #4 of the Design Tools playground.
+  Gray-Scott simulation on a small offscreen buffer, upscaled to the
+  viewport. Three parameter regimes (coral / mitosis / maze) switchable
+  via ?variant= / the bottom bar / arrow keys — the feed & kill sliders
+  start at each regime and are yours to drift. Drag on the canvas to
+  paint chemical, R reseeds.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Reaction-Diffusion — prototype</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #000; overflow: hidden; font-family: ui-sans-serif, system-ui, sans-serif; }
+  canvas { display: block; cursor: crosshair; touch-action: none; }
+
+  /* control panel */
+  #panel {
+    position: fixed; top: 16px; left: 16px; z-index: 10;
+    background: rgba(20,20,20,.85); color: #eee; padding: 14px 16px;
+    border-radius: 10px; font-size: 12px; width: 220px;
+    backdrop-filter: blur(6px);
+  }
+  #panel label { display: block; margin-top: 10px; color: #999; }
+  #panel input[type=range] { width: 100%; }
+  #panel .hint { margin-top: 12px; color: #666; }
+
+  /* ink & paper — shared color block, identical across tools */
+  #panel .swatches { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+  #panel .swatches input[type=color] {
+    flex: 1; height: 26px; padding: 1px; border: 1px solid #444;
+    border-radius: 6px; background: #111; cursor: pointer;
+  }
+  #panel .swatches button {
+    border: 1px solid #444; background: #111; color: #eee;
+    border-radius: 6px; height: 26px; width: 30px; cursor: pointer;
+  }
+  #panel .presets { display: flex; gap: 5px; margin-top: 8px; }
+  #panel .presets button {
+    flex: 1; height: 16px; padding: 0; border: 1px solid #444; border-radius: 4px;
+    overflow: hidden; display: flex; cursor: pointer; background: none;
+  }
+  #panel .presets span { flex: 1; }
+
+  /* prototype switcher — deliberately NOT styled like the design being judged */
+  #switcher {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 10;
+    display: flex; align-items: center; gap: 12px;
+    background: #fff; color: #000; border-radius: 999px; padding: 8px 16px;
+    font-size: 13px; font-weight: 600; box-shadow: 0 4px 20px rgba(0,0,0,.5);
+    user-select: none;
+  }
+  #switcher button {
+    border: 0; background: none; font-size: 16px; cursor: pointer; padding: 2px 6px;
+  }
+  #switcher span { min-width: 180px; text-align: center; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="panel">
+  <strong id="variant-title"></strong>
+  <label>Feed <input type="range" id="feed" min="0.01" max="0.09" step="0.0005" value="0.055" /></label>
+  <label>Kill <input type="range" id="kill" min="0.04" max="0.07" step="0.0005" value="0.062" /></label>
+  <label>Sim speed <input type="range" id="speed" min="1" max="20" step="1" value="8" /></label>
+  <label>Colors — ink ⇄ paper</label>
+  <div class="swatches">
+    <input type="color" id="ink" value="#000000" title="Ink" />
+    <button id="swap" title="Swap ink and paper">⇄</button>
+    <input type="color" id="paper" value="#ffffff" title="Paper" />
+  </div>
+  <div class="presets" id="presets"></div>
+  <div class="hint">drag — paint chemical · R — reseed</div>
+</div>
+
+<div id="switcher">
+  <button id="prev">←</button><span id="label"></span><button id="next">→</button>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H, dpr;
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  initSim();
+}
+
+// live params from the panel
+const P = { feed: 0.055, kill: 0.062, speed: 8 };
+for (const k of ['feed', 'kill', 'speed'])
+  document.getElementById(k).addEventListener('input', e => P[k] = +e.target.value);
+
+/* ------------------------------ colors --------------------------
+   Ink & Paper — every tool in this playground is two colors: the
+   mark (ink) and the ground (paper). Both live in the URL so a good
+   combo is a bookmarkable link. Presets are shared playground-wide.
+---------------------------------------------------------------- */
+const PRESETS = [
+  { name: 'Print',     paper: '#ffffff', ink: '#000000' },
+  { name: 'Blueprint', paper: '#0b2447', ink: '#a9d6ff' },
+  { name: 'Riso Red',  paper: '#f7f1e1', ink: '#ff4b2e' },
+  { name: 'Terminal',  paper: '#0a0f0a', ink: '#33ff66' },
+  { name: 'Butter',    paper: '#ffd966', ink: '#33200a' },
+  { name: 'Midnight',  paper: '#000000', ink: '#9d5cff' },
+];
+const C = { ink: '#000000', paper: '#ffffff' };
+{
+  const q = new URLSearchParams(location.search);
+  for (const k of ['ink', 'paper'])
+    if (/^[0-9a-fA-F]{6}$/.test(q.get(k) || '')) C[k] = '#' + q.get(k);
+}
+function rgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [n >> 16 & 255, n >> 8 & 255, n & 255];
+}
+const inkEl = document.getElementById('ink'), paperEl = document.getElementById('paper');
+function setColors(ink, paper) {
+  C.ink = ink; C.paper = paper;
+  C.inkRGB = rgb(ink); C.paperRGB = rgb(paper);
+  inkEl.value = ink; paperEl.value = paper;
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('ink', ink.slice(1));
+    url.searchParams.set('paper', paper.slice(1));
+    history.replaceState(null, '', url);
+  } catch {}
+}
+inkEl.addEventListener('input', e => setColors(e.target.value, C.paper));
+paperEl.addEventListener('input', e => setColors(C.ink, e.target.value));
+document.getElementById('swap').onclick = () => setColors(C.paper, C.ink);
+for (const p of PRESETS) {
+  const b = document.createElement('button');
+  b.title = p.name;
+  b.innerHTML = `<span style="background:${p.paper}"></span><span style="background:${p.ink}"></span>`;
+  b.onclick = () => setColors(p.ink, p.paper);
+  document.getElementById('presets').appendChild(b);
+}
+setColors(C.ink, C.paper);
+
+/* --------------------------- simulation --------------------------
+   Gray-Scott: two chemicals on a grid. U is fed in everywhere, V
+   eats U to make more of itself (u + 2v → 3v), and both diffuse —
+   V slower than U. That's the whole recipe; coral, cells and mazes
+   are just different feed/kill balances. Runs on a small toroidal
+   buffer (~220px on the long side) and upscales with smoothing.
+---------------------------------------------------------------- */
+let simW, simH, u, v, u2, v2, img, bufCtx;
+const buf = document.createElement('canvas');
+
+function initSim() {
+  const target = 220;
+  const aspect = W / H;
+  simW = aspect >= 1 ? target : Math.max(16, Math.round(target * aspect));
+  simH = aspect >= 1 ? Math.max(16, Math.round(target / aspect)) : target;
+  buf.width = simW; buf.height = simH;
+  bufCtx = buf.getContext('2d');
+  img = bufCtx.createImageData(simW, simH);
+  u = new Float32Array(simW * simH).fill(1);
+  v = new Float32Array(simW * simH).fill(0);
+  u2 = new Float32Array(simW * simH);
+  v2 = new Float32Array(simW * simH);
+  for (let n = 0; n < 12; n++)
+    seed(Math.random() * simW, Math.random() * simH, 3 + Math.random() * 4);
+}
+
+function seed(cx, cy, r) {
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+    if (dx * dx + dy * dy > r * r) continue;
+    const x = (Math.round(cx + dx) + simW) % simW;
+    const y = (Math.round(cy + dy) + simH) % simH;
+    v[y * simW + x] = 1; u[y * simW + x] = 0.5;
+  }
+}
+
+function stepSim() {
+  const Du = 1.0, Dv = 0.5, F = P.feed, K = P.kill;
+  for (let y = 0; y < simH; y++) {
+    const up = ((y - 1 + simH) % simH) * simW;
+    const down = ((y + 1) % simH) * simW;
+    const row = y * simW;
+    for (let x = 0; x < simW; x++) {
+      const l = (x - 1 + simW) % simW, r = (x + 1) % simW, i = row + x;
+      const lapU = (u[up + l] + u[up + r] + u[down + l] + u[down + r]) * 0.05 +
+                   (u[up + x] + u[down + x] + u[row + l] + u[row + r]) * 0.2 - u[i];
+      const lapV = (v[up + l] + v[up + r] + v[down + l] + v[down + r]) * 0.05 +
+                   (v[up + x] + v[down + x] + v[row + l] + v[row + r]) * 0.2 - v[i];
+      const uvv = u[i] * v[i] * v[i];
+      u2[i] = u[i] + Du * lapU - uvv + F * (1 - u[i]);
+      v2[i] = v[i] + Dv * lapV + uvv - (F + K) * v[i];
+    }
+  }
+  [u, u2] = [u2, u]; [v, v2] = [v2, v];
+}
+
+function draw() {
+  const d = img.data;
+  const [pr, pg, pb] = C.paperRGB, [ir, ig, ib] = C.inkRGB;
+  for (let i = 0; i < v.length; i++) {
+    const t = Math.min(1, v[i] * 2.5); // 0 = paper, 1 = ink
+    d[i * 4] = pr + (ir - pr) * t;
+    d[i * 4 + 1] = pg + (ig - pg) * t;
+    d[i * 4 + 2] = pb + (ib - pb) * t;
+    d[i * 4 + 3] = 255;
+  }
+  bufCtx.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(buf, 0, 0, W, H);
+}
+
+/* --------------------------- painting ---------------------------- */
+let painting = false;
+function paint(e) {
+  seed(e.clientX / W * simW, e.clientY / H * simH, 3);
+}
+canvas.addEventListener('pointerdown', e => { painting = true; paint(e); });
+window.addEventListener('pointermove', e => { if (painting) paint(e); });
+window.addEventListener('pointerup', () => painting = false);
+
+/* --------------------------- switcher ----------------------------
+   Variants are parameter regimes (Pearson's classes), not different
+   renderers: switching one sets the feed/kill sliders and reseeds.
+---------------------------------------------------------------- */
+const VARIANTS = [
+  { key: 'A', name: 'Coral',   feed: 0.055,  kill: 0.062 },
+  { key: 'B', name: 'Mitosis', feed: 0.0367, kill: 0.0649 },
+  { key: 'C', name: 'Maze',    feed: 0.029,  kill: 0.057 },
+];
+let current = Math.max(0, VARIANTS.findIndex(v =>
+  v.key === new URLSearchParams(location.search).get('variant')));
+
+function setVariant(i) {
+  current = (i + VARIANTS.length) % VARIANTS.length;
+  const vt = VARIANTS[current];
+  document.getElementById('label').textContent = `${vt.key} — ${vt.name}`;
+  document.getElementById('variant-title').textContent = vt.name;
+  P.feed = vt.feed; P.kill = vt.kill;
+  document.getElementById('feed').value = vt.feed;
+  document.getElementById('kill').value = vt.kill;
+  try { // history API is unavailable on some file:// setups — switching still works
+    const url = new URL(location.href);
+    url.searchParams.set('variant', vt.key);
+    history.replaceState(null, '', url);
+  } catch {}
+  if (u) initSim();
+}
+document.getElementById('prev').onclick = () => setVariant(current - 1);
+document.getElementById('next').onclick = () => setVariant(current + 1);
+window.addEventListener('keydown', e => {
+  if (/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
+  if (e.key === 'ArrowLeft') setVariant(current - 1);
+  if (e.key === 'ArrowRight') setVariant(current + 1);
+  if (e.key === 'r' || e.key === 'R') initSim();
+});
+
+window.addEventListener('resize', resize);
+resize();
+setVariant(current);
+
+/* -------------------------- render loop ------------------------- */
+(function frame() {
+  for (let s = 0; s < P.speed; s++) stepSim();
+  draw();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

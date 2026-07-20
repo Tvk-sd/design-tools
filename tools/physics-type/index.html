@@ -1,0 +1,328 @@
+<!doctype html>
+<!--
+  Physics Type — tool #5 of the Design Tools playground.
+  Each letter is a verlet body you can grab and throw with the mouse.
+  Three physical setups, switchable via ?variant= / the bottom bar /
+  arrow keys: springs pulling letters home, a hanging chain, and a
+  gravity pit they tumble into. R resets the layout.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Physics Type — prototype</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #000; overflow: hidden; font-family: ui-sans-serif, system-ui, sans-serif; }
+  canvas { display: block; cursor: grab; touch-action: none; }
+  canvas.grabbing { cursor: grabbing; }
+
+  /* control panel */
+  #panel {
+    position: fixed; top: 16px; left: 16px; z-index: 10;
+    background: rgba(20,20,20,.85); color: #eee; padding: 14px 16px;
+    border-radius: 10px; font-size: 12px; width: 220px;
+    backdrop-filter: blur(6px);
+  }
+  #panel label { display: block; margin-top: 10px; color: #999; }
+  #panel input[type=range] { width: 100%; }
+  #panel input[type=text] {
+    width: 100%; margin-top: 4px; padding: 4px 6px; border-radius: 6px;
+    border: 1px solid #444; background: #111; color: #eee; font-size: 12px;
+  }
+  #panel .hint { margin-top: 12px; color: #666; }
+
+  /* ink & paper — shared color block, identical across tools */
+  #panel .swatches { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+  #panel .swatches input[type=color] {
+    flex: 1; height: 26px; padding: 1px; border: 1px solid #444;
+    border-radius: 6px; background: #111; cursor: pointer;
+  }
+  #panel .swatches button {
+    border: 1px solid #444; background: #111; color: #eee;
+    border-radius: 6px; height: 26px; width: 30px; cursor: pointer;
+  }
+  #panel .presets { display: flex; gap: 5px; margin-top: 8px; }
+  #panel .presets button {
+    flex: 1; height: 16px; padding: 0; border: 1px solid #444; border-radius: 4px;
+    overflow: hidden; display: flex; cursor: pointer; background: none;
+  }
+  #panel .presets span { flex: 1; }
+
+  /* prototype switcher — deliberately NOT styled like the design being judged */
+  #switcher {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 10;
+    display: flex; align-items: center; gap: 12px;
+    background: #fff; color: #000; border-radius: 999px; padding: 8px 16px;
+    font-size: 13px; font-weight: 600; box-shadow: 0 4px 20px rgba(0,0,0,.5);
+    user-select: none;
+  }
+  #switcher button {
+    border: 0; background: none; font-size: 16px; cursor: pointer; padding: 2px 6px;
+  }
+  #switcher span { min-width: 180px; text-align: center; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="panel">
+  <strong id="variant-title"></strong>
+  <label>Text <input type="text" id="word" value="GRAVITY" /></label>
+  <label>Size <input type="range" id="size" min="0.3" max="1.5" step="0.05" value="1" /></label>
+  <label>Gravity <input type="range" id="gravity" min="0" max="3" step="0.05" value="1" /></label>
+  <label>Stiffness <input type="range" id="stiff" min="0" max="1" step="0.01" value="0.5" /></label>
+  <label>Colors — ink ⇄ paper</label>
+  <div class="swatches">
+    <input type="color" id="ink" value="#000000" title="Ink" />
+    <button id="swap" title="Swap ink and paper">⇄</button>
+    <input type="color" id="paper" value="#ffffff" title="Paper" />
+  </div>
+  <div class="presets" id="presets"></div>
+  <div class="hint">grab a letter and throw it · R — reset</div>
+</div>
+
+<div id="switcher">
+  <button id="prev">←</button><span id="label"></span><button id="next">→</button>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H, dpr;
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  layout();
+}
+
+// live params from the panel
+const P = { word: 'GRAVITY', size: 1, gravity: 1, stiff: 0.5 };
+document.getElementById('word').addEventListener('input', e => { P.word = e.target.value || 'TYPE'; layout(); });
+document.getElementById('size').addEventListener('input', e => { P.size = +e.target.value; layout(); });
+for (const k of ['gravity', 'stiff'])
+  document.getElementById(k).addEventListener('input', e => P[k] = +e.target.value);
+
+/* ------------------------------ colors --------------------------
+   Ink & Paper — every tool in this playground is two colors: the
+   mark (ink) and the ground (paper). Both live in the URL so a good
+   combo is a bookmarkable link. Presets are shared playground-wide.
+---------------------------------------------------------------- */
+const PRESETS = [
+  { name: 'Print',     paper: '#ffffff', ink: '#000000' },
+  { name: 'Blueprint', paper: '#0b2447', ink: '#a9d6ff' },
+  { name: 'Riso Red',  paper: '#f7f1e1', ink: '#ff4b2e' },
+  { name: 'Terminal',  paper: '#0a0f0a', ink: '#33ff66' },
+  { name: 'Butter',    paper: '#ffd966', ink: '#33200a' },
+  { name: 'Midnight',  paper: '#000000', ink: '#9d5cff' },
+];
+const C = { ink: '#000000', paper: '#ffffff' };
+{
+  const q = new URLSearchParams(location.search);
+  for (const k of ['ink', 'paper'])
+    if (/^[0-9a-fA-F]{6}$/.test(q.get(k) || '')) C[k] = '#' + q.get(k);
+}
+const inkEl = document.getElementById('ink'), paperEl = document.getElementById('paper');
+function setColors(ink, paper) {
+  C.ink = ink; C.paper = paper;
+  inkEl.value = ink; paperEl.value = paper;
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('ink', ink.slice(1));
+    url.searchParams.set('paper', paper.slice(1));
+    history.replaceState(null, '', url);
+  } catch {}
+}
+inkEl.addEventListener('input', e => setColors(e.target.value, C.paper));
+paperEl.addEventListener('input', e => setColors(C.ink, e.target.value));
+document.getElementById('swap').onclick = () => setColors(C.paper, C.ink);
+for (const p of PRESETS) {
+  const b = document.createElement('button');
+  b.title = p.name;
+  b.innerHTML = `<span style="background:${p.paper}"></span><span style="background:${p.ink}"></span>`;
+  b.onclick = () => setColors(p.ink, p.paper);
+  document.getElementById('presets').appendChild(b);
+}
+setColors(C.ink, C.paper);
+
+/* ---------------------------- bodies ----------------------------
+   Verlet integration: each body stores its current and previous
+   position; velocity is implicit (x - px). Move a body and it keeps
+   the momentum — which is what makes throwing feel right for free.
+---------------------------------------------------------------- */
+let bodies = [], fontSize = 100, grabbed = null;
+
+function layout() {
+  const word = P.word;
+  fontSize = Math.min(W / (word.length * 0.7), H * 0.35) * P.size;
+  ctx.font = `900 ${fontSize}px ui-sans-serif, sans-serif`;
+  const widths = [...word].map(ch => ctx.measureText(ch).width);
+  const total = widths.reduce((a, b) => a + b, 0);
+  const homeY = VARIANTS[current]?.key === 'B' ? H * 0.3 : H / 2;
+  let x = (W - total) / 2;
+  bodies = [...word].map((ch, i) => {
+    const b = {
+      ch, w: widths[i], r: fontSize * 0.35,
+      x: x + widths[i] / 2, y: homeY,
+      homeX: x + widths[i] / 2, homeY,
+    };
+    b.px = b.x; b.py = b.y;
+    x += widths[i];
+    return b;
+  });
+  grabbed = null;
+}
+
+const DT = 1 / 60;
+
+function step() {
+  const mode = VARIANTS[current].key;
+  const g = mode === 'A' ? 0 : P.gravity * 1500; // A is pure springs
+  const springK = 20 + P.stiff * 180;
+  const damp = mode === 'A' ? 0.985 : 0.995;
+
+  for (const b of bodies) {
+    if (b === grabbed) continue;
+    if (mode === 'B' && (b === bodies[0] || b === bodies[bodies.length - 1])) continue; // pinned
+    let ax = 0, ay = g;
+    if (mode === 'A') {
+      ax = (b.homeX - b.x) * springK;
+      ay = (b.homeY - b.y) * springK;
+    }
+    const nx = b.x + (b.x - b.px) * damp + ax * DT * DT;
+    const ny = b.y + (b.y - b.py) * damp + ay * DT * DT;
+    b.px = b.x; b.py = b.y;
+    b.x = nx; b.y = ny;
+  }
+
+  if (mode === 'B') {
+    // chain: consecutive letters keep their layout spacing.
+    // more iterations = stiffer rope, so the slider maps to both.
+    const iters = 1 + Math.round(P.stiff * 7);
+    for (let n = 0; n < iters; n++) {
+      for (let i = 0; i < bodies.length - 1; i++) {
+        const a = bodies[i], b = bodies[i + 1];
+        const rest = (a.w + b.w) / 2;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy) || 0.0001;
+        const diff = (dist - rest) / dist / 2;
+        const aFree = a !== grabbed && i !== 0;
+        const bFree = b !== grabbed && i + 1 !== bodies.length - 1;
+        if (aFree) { a.x += dx * diff * (bFree ? 1 : 2); a.y += dy * diff * (bFree ? 1 : 2); }
+        if (bFree) { b.x -= dx * diff * (aFree ? 1 : 2); b.y -= dy * diff * (aFree ? 1 : 2); }
+      }
+    }
+  }
+
+  if (mode === 'C') {
+    // letters shoulder each other apart so they pile instead of stacking
+    for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
+      const a = bodies[i], b = bodies[j];
+      const rest = (a.r + b.r) * 0.9;
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist >= rest || dist === 0) continue;
+      const diff = (dist - rest) / dist / 2;
+      if (a !== grabbed) { a.x += dx * diff; a.y += dy * diff; }
+      if (b !== grabbed) { b.x -= dx * diff; b.y -= dy * diff; }
+    }
+  }
+
+  // walls + floor for everyone (bounce by reflecting implicit velocity)
+  for (const b of bodies) {
+    if (b === grabbed) continue;
+    if (b.y + b.r > H) { b.y = H - b.r; b.py = b.y + (b.y - b.py) * 0.6; }
+    if (b.y - b.r < 0) { b.y = b.r; b.py = b.y + (b.y - b.py) * 0.6; }
+    if (b.x - b.r < 0) { b.x = b.r; b.px = b.x + (b.x - b.px) * 0.6; }
+    if (b.x + b.r > W) { b.x = W - b.r; b.px = b.x + (b.x - b.px) * 0.6; }
+  }
+}
+
+function draw() {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = C.ink;
+  ctx.font = `900 ${fontSize}px ui-sans-serif, sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const rope = VARIANTS[current].key === 'B';
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    if (b.ch === ' ') continue;
+    let angle = 0;
+    if (rope) {
+      const prev = bodies[i - 1] || b, next = bodies[i + 1] || b;
+      angle = Math.atan2(next.y - prev.y, next.x - prev.x);
+    }
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(angle);
+    ctx.fillText(b.ch, 0, 0);
+    ctx.restore();
+  }
+}
+
+/* ---------------------------- grabbing --------------------------- */
+canvas.addEventListener('pointerdown', e => {
+  let best = null, bestD = Infinity;
+  for (const b of bodies) {
+    const d = Math.hypot(e.clientX - b.x, e.clientY - b.y);
+    if (d < Math.max(b.r * 1.5, 40) && d < bestD) { best = b; bestD = d; }
+  }
+  if (best) { grabbed = best; canvas.classList.add('grabbing'); }
+});
+window.addEventListener('pointermove', e => {
+  if (!grabbed) return;
+  grabbed.px = grabbed.x; grabbed.py = grabbed.y;
+  grabbed.x = e.clientX; grabbed.y = e.clientY;
+});
+window.addEventListener('pointerup', () => {
+  grabbed = null;
+  canvas.classList.remove('grabbing');
+});
+
+/* --------------------------- switcher --------------------------- */
+const VARIANTS = [
+  { key: 'A', name: 'Boing (springs home)' },
+  { key: 'B', name: 'Hanging chain' },
+  { key: 'C', name: 'Gravity pit' },
+];
+let current = Math.max(0, VARIANTS.findIndex(v =>
+  v.key === new URLSearchParams(location.search).get('variant')));
+
+function setVariant(i) {
+  current = (i + VARIANTS.length) % VARIANTS.length;
+  const v = VARIANTS[current];
+  document.getElementById('label').textContent = `${v.key} — ${v.name}`;
+  document.getElementById('variant-title').textContent = v.name;
+  try { // history API is unavailable on some file:// setups — switching still works
+    const url = new URL(location.href);
+    url.searchParams.set('variant', v.key);
+    history.replaceState(null, '', url);
+  } catch {}
+  if (W) layout();
+}
+document.getElementById('prev').onclick = () => setVariant(current - 1);
+document.getElementById('next').onclick = () => setVariant(current + 1);
+window.addEventListener('keydown', e => {
+  if (/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
+  if (e.key === 'ArrowLeft') setVariant(current - 1);
+  if (e.key === 'ArrowRight') setVariant(current + 1);
+  if (e.key === 'r' || e.key === 'R') layout();
+});
+
+window.addEventListener('resize', resize);
+setVariant(current); // before resize: layout() needs the variant for homeY
+resize();
+
+/* -------------------------- render loop ------------------------- */
+(function frame() {
+  step();
+  draw();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

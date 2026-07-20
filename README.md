@@ -33,3 +33,5 @@ Every tool shares the same two-color system: **ink** (the mark) and **paper** (t
 - **kinetic-type** — text warped by stacked sine oscillators. 3 variants (`?variant=A|B|C`, arrow keys to cycle).
 - **flow-field-ink** — particles drifting through a vector field, leaving ink trails. 3 fields (`?variant=A|B|C`): silk, vortex, turbulence. Click or `C` to wipe the ink; fade at 0 accumulates forever (poster mode).
 - **halftone** — drop any image, get it rasterized by brightness. 3 renderers (`?variant=A|B|C`): dots, lines, ASCII. Sliders for cell size, contrast, angle; right-click the canvas to save the result.
+- **reaction-diffusion** — Gray-Scott simulation, upscaled from a small buffer. 3 regimes (`?variant=A|B|C`): coral, mitosis, maze — switching sets the feed/kill sliders, then drift them yourself. Drag to paint chemical, `R` reseeds.
+- **physics-type** — letters as verlet bodies you grab and throw. 3 setups (`?variant=A|B|C`): springs home, hanging chain, gravity pit. `R` resets the layout.
