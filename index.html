@@ -14,15 +14,26 @@
   }
   h1 { font-size: 14px; letter-spacing: .2em; color: #777; text-transform: uppercase; }
   p.sub { margin-top: 8px; font-size: 13px; color: #555; max-width: 420px; text-align: center; }
-  ul { list-style: none; margin-top: 48px; width: 100%; max-width: 520px; }
+  ul { list-style: none; margin-top: 48px; width: 100%; max-width: 560px; }
   li + li { margin-top: 12px; }
   a.tool {
-    display: block; padding: 20px 24px; border: 1px solid #222; border-radius: 12px;
+    display: flex; align-items: stretch; overflow: hidden;
+    border: 1px solid #222; border-radius: 12px;
     color: #eee; text-decoration: none; transition: border-color .15s, transform .15s;
   }
   a.tool:hover { border-color: #666; transform: translateX(4px); }
+  a.tool canvas {
+    width: 96px; flex: 0 0 96px; display: block;
+    border-right: 1px solid #222;
+  }
+  a.tool .txt {
+    padding: 18px 22px; display: flex; flex-direction: column; justify-content: center;
+  }
   a.tool strong { display: block; font-size: 18px; }
   a.tool span { display: block; margin-top: 4px; font-size: 13px; color: #888; }
+  @media (prefers-reduced-motion: reduce) {
+    a.tool { transition: none; }
+  }
 </style>
 </head>
 <body>
@@ -31,36 +42,300 @@
      HTML file under <code>tools/</code> — no build step, no dependencies.</p>
   <ul>
     <li>
-      <a class="tool" href="tools/kinetic-type/index.html">
-        <strong>Kinetic Type</strong>
-        <span>Text warped by sine-wave oscillators — 3 variants: grid warp, stripes × difference, sliced liquid type.</span>
+      <a class="tool" href="tools/kinetic-type/index.html" data-preview="kinetic"
+         style="--paper:#ffffff; --ink:#000000;">
+        <canvas aria-hidden="true"></canvas>
+        <div class="txt">
+          <strong>Kinetic Type</strong>
+          <span>Text warped by sine-wave oscillators — 3 variants: grid warp, stripes × difference, sliced liquid type.</span>
+        </div>
       </a>
     </li>
     <li>
-      <a class="tool" href="tools/flow-field-ink/index.html">
-        <strong>Flow-Field Ink</strong>
-        <span>Particles drifting through a vector field, leaving ink trails — 3 fields: silk, vortex, turbulence. Click to wipe.</span>
+      <a class="tool" href="tools/flow-field-ink/index.html" data-preview="flow"
+         style="--paper:#000000; --ink:#9d5cff;">
+        <canvas aria-hidden="true"></canvas>
+        <div class="txt">
+          <strong>Flow-Field Ink</strong>
+          <span>Particles drifting through a vector field, leaving ink trails — 3 fields: silk, vortex, turbulence. Click to wipe.</span>
+        </div>
       </a>
     </li>
     <li>
-      <a class="tool" href="tools/halftone/index.html">
-        <strong>Halftone Imager</strong>
-        <span>Drop any image; it gets rasterized into dots, lines or ASCII by brightness. Right-click to save.</span>
+      <a class="tool" href="tools/halftone/index.html" data-preview="halftone"
+         style="--paper:#f7f1e1; --ink:#ff4b2e;">
+        <canvas aria-hidden="true"></canvas>
+        <div class="txt">
+          <strong>Halftone Imager</strong>
+          <span>Drop any image; it gets rasterized into dots, lines or ASCII by brightness. Right-click to save.</span>
+        </div>
       </a>
     </li>
     <li>
-      <a class="tool" href="tools/reaction-diffusion/index.html">
-        <strong>Reaction-Diffusion</strong>
-        <span>Gray-Scott chemistry growing coral, cells and mazes. Drag to paint chemical; feed/kill sliders steer the regime.</span>
+      <a class="tool" href="tools/reaction-diffusion/index.html" data-preview="rd"
+         style="--paper:#0a0f0a; --ink:#33ff66;">
+        <canvas aria-hidden="true"></canvas>
+        <div class="txt">
+          <strong>Reaction-Diffusion</strong>
+          <span>Gray-Scott chemistry growing coral, cells and mazes. Drag to paint chemical; feed/kill sliders steer the regime.</span>
+        </div>
       </a>
     </li>
     <li>
-      <a class="tool" href="tools/physics-type/index.html">
-        <strong>Physics Type</strong>
-        <span>Letters as verlet bodies you can grab and throw — springs home, hanging chain, or a gravity pit.</span>
+      <a class="tool" href="tools/physics-type/index.html" data-preview="physics"
+         style="--paper:#0b2447; --ink:#a9d6ff;">
+        <canvas aria-hidden="true"></canvas>
+        <div class="txt">
+          <strong>Physics Type</strong>
+          <span>Letters as verlet bodies you can grab and throw — springs home, hanging chain, or a gravity pit.</span>
+        </div>
       </a>
     </li>
-    <!-- Add the next tool here: copy a tools/<name>/index.html, then one <li> -->
+    <!-- Add the next tool here: copy a tools/<name>/index.html, one <li>,
+         and a mini preview in the PREVIEWS map below -->
   </ul>
+
+<script>
+/* Live thumbnails: each row's canvas runs a miniature of its tool in
+   the tool's ink & paper duo. Hovering a row feeds the cursor into
+   the sim. One shared rAF; reduced motion gets a warmed still frame. */
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const SZ = 96;
+
+function withAlpha(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`;
+}
+function rgbOf(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [n >> 16 & 255, n >> 8 & 255, n & 255];
+}
+
+const PREVIEWS = {
+
+  kinetic(ctx, duo, getCur) {
+    const word = 'HELLO ';
+    return {
+      step(t) {
+        const cur = getCur();
+        ctx.fillStyle = duo.paper; ctx.fillRect(0, 0, SZ, SZ);
+        ctx.fillStyle = duo.ink;
+        const rows = 7, rowH = SZ / rows;
+        ctx.font = `700 ${rowH * 0.85}px ui-sans-serif, sans-serif`;
+        ctx.textBaseline = 'middle';
+        for (let r = 0; r < rows; r++) {
+          const y = (r + 0.5) * rowH;
+          let amp = 0.8;
+          if (cur) amp += 1.2 * Math.exp(-(((cur.y - y) / 40) ** 2));
+          const s = 1 + amp *
+            (0.6 * Math.sin(r * 0.7 + t * 1.2) + 0.4 * Math.sin(r * 0.3 - t * 0.8));
+          ctx.save();
+          ctx.translate(SZ / 2, y);
+          ctx.scale(Math.max(0.05, s), 1);
+          const ww = ctx.measureText(word).width;
+          const reps = Math.ceil(SZ / Math.max(1, ww * s)) + 2;
+          for (let i = -reps; i <= reps; i++) ctx.fillText(word, i * ww - ww / 2, 0);
+          ctx.restore();
+        }
+      },
+      warm() { this.step(1.7); },
+    };
+  },
+
+  flow(ctx, duo, getCur) {
+    const pts = Array.from({ length: 130 }, () => ({
+      x: Math.random() * SZ, y: Math.random() * SZ, life: 40 + Math.random() * 160,
+    }));
+    ctx.fillStyle = duo.paper; ctx.fillRect(0, 0, SZ, SZ);
+    return {
+      step(t) {
+        const cur = getCur();
+        ctx.fillStyle = withAlpha(duo.paper, 0.05); ctx.fillRect(0, 0, SZ, SZ);
+        ctx.strokeStyle = withAlpha(duo.ink, 0.55);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (const p of pts) {
+          let a = Math.PI * (Math.sin(p.x / SZ * 3.5 + t * 0.4) + Math.sin(p.y / SZ * 3.5 - t * 0.3));
+          if (cur) {
+            const d = Math.hypot(cur.x - p.x, cur.y - p.y);
+            const ta = Math.atan2(cur.y - p.y, cur.x - p.x);
+            a += Math.atan2(Math.sin(ta - a), Math.cos(ta - a)) * Math.exp(-d / 50) * 0.9;
+          }
+          const nx = p.x + Math.cos(a) * 1.3, ny = p.y + Math.sin(a) * 1.3;
+          ctx.moveTo(p.x, p.y); ctx.lineTo(nx, ny);
+          p.x = nx; p.y = ny;
+          if (--p.life < 0 || nx < 0 || nx > SZ || ny < 0 || ny > SZ) {
+            p.x = Math.random() * SZ; p.y = Math.random() * SZ;
+            p.life = 40 + Math.random() * 160;
+          }
+        }
+        ctx.stroke();
+      },
+      warm() { for (let i = 0; i < 80; i++) this.step(i * 0.016); },
+    };
+  },
+
+  halftone(ctx, duo, getCur) {
+    const cell = SZ / 12;
+    return {
+      step(t) {
+        const cur = getCur();
+        ctx.fillStyle = duo.paper; ctx.fillRect(0, 0, SZ, SZ);
+        ctx.fillStyle = duo.ink;
+        const lights = [
+          [SZ * (0.5 + 0.35 * Math.cos(t * 0.5)), SZ * (0.5 + 0.35 * Math.sin(t * 0.7))],
+        ];
+        if (cur) lights.push([cur.x, cur.y]);
+        ctx.beginPath();
+        for (let r = 0; r < 12; r++) for (let c = 0; c < 12; c++) {
+          const x = (c + 0.5) * cell, y = (r + 0.5) * cell;
+          let b = 0;
+          for (const [lx, ly] of lights)
+            b += Math.exp(-((x - lx) ** 2 + (y - ly) ** 2) / (2 * (SZ * 0.4) ** 2));
+          const rad = Math.max(0, 1 - Math.min(1, b)) * cell * 0.45;
+          if (rad < 0.3) continue;
+          ctx.moveTo(x + rad, y);
+          ctx.arc(x, y, rad, 0, Math.PI * 2);
+        }
+        ctx.fill();
+      },
+      warm() { this.step(0.9); },
+    };
+  },
+
+  rd(ctx, duo, getCur) {
+    const S = 48;
+    let u = new Float32Array(S * S).fill(1), v = new Float32Array(S * S);
+    let u2 = new Float32Array(S * S), v2 = new Float32Array(S * S);
+    const buf = document.createElement('canvas');
+    buf.width = S; buf.height = S;
+    const bctx = buf.getContext('2d');
+    const img = bctx.createImageData(S, S);
+    const [pr, pg, pb] = rgbOf(duo.paper), [ir, ig, ib] = rgbOf(duo.ink);
+    const seed = (cx, cy, r) => {
+      for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+        if (dx * dx + dy * dy > r * r) continue;
+        const x = (Math.round(cx + dx) + S) % S, y = (Math.round(cy + dy) + S) % S;
+        v[y * S + x] = 1; u[y * S + x] = 0.5;
+      }
+    };
+    for (let n = 0; n < 4; n++) seed(Math.random() * S, Math.random() * S, 2);
+    const sim = () => {
+      const F = 0.0367, K = 0.0649;
+      for (let y = 0; y < S; y++) {
+        const up = ((y - 1 + S) % S) * S, dn = ((y + 1) % S) * S, row = y * S;
+        for (let x = 0; x < S; x++) {
+          const l = (x - 1 + S) % S, r = (x + 1) % S, i = row + x;
+          const lu = (u[up + l] + u[up + r] + u[dn + l] + u[dn + r]) * 0.05 +
+                     (u[up + x] + u[dn + x] + u[row + l] + u[row + r]) * 0.2 - u[i];
+          const lv = (v[up + l] + v[up + r] + v[dn + l] + v[dn + r]) * 0.05 +
+                     (v[up + x] + v[dn + x] + v[row + l] + v[row + r]) * 0.2 - v[i];
+          const uvv = u[i] * v[i] * v[i];
+          u2[i] = u[i] + lu - uvv + F * (1 - u[i]);
+          v2[i] = v[i] + 0.5 * lv + uvv - (F + K) * v[i];
+        }
+      }
+      [u, u2] = [u2, u]; [v, v2] = [v2, v];
+    };
+    return {
+      step() {
+        const cur = getCur();
+        if (cur) seed(cur.x / SZ * S, cur.y / SZ * S, 1);
+        for (let s = 0; s < 3; s++) sim();
+        const d = img.data;
+        for (let i = 0; i < v.length; i++) {
+          const t2 = Math.min(1, v[i] * 2.5);
+          d[i * 4] = pr + (ir - pr) * t2;
+          d[i * 4 + 1] = pg + (ig - pg) * t2;
+          d[i * 4 + 2] = pb + (ib - pb) * t2;
+          d[i * 4 + 3] = 255;
+        }
+        bctx.putImageData(img, 0, 0);
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(buf, 0, 0, SZ, SZ);
+      },
+      warm() { for (let i = 0; i < 70; i++) this.step(); },
+    };
+  },
+
+  physics(ctx, duo, getCur) {
+    const word = 'PHY';
+    const size = SZ * 0.34;
+    ctx.font = `900 ${size}px ui-sans-serif, sans-serif`;
+    const widths = [...word].map(c => ctx.measureText(c).width);
+    const total = widths.reduce((a, b) => a + b, 0);
+    let x0 = (SZ - total) / 2;
+    const bodies = [...word].map((c, i) => {
+      const b = { ch: c, hx: x0 + widths[i] / 2, hy: SZ / 2 };
+      b.x = b.hx; b.y = b.hy; b.px = b.x; b.py = b.y;
+      x0 += widths[i];
+      return b;
+    });
+    const DT = 1 / 60;
+    return {
+      step() {
+        const cur = getCur();
+        for (const b of bodies) {
+          let ax = (b.hx - b.x) * 90, ay = (b.hy - b.y) * 90;
+          if (cur) {
+            const dx = b.x - cur.x, dy = b.y - cur.y;
+            const d = Math.hypot(dx, dy);
+            if (d < 55 && d > 0.001) {
+              const f = (1 - d / 55) * 16000;
+              ax += dx / d * f; ay += dy / d * f;
+            }
+          }
+          const nx = b.x + (b.x - b.px) * 0.92 + ax * DT * DT;
+          const ny = b.y + (b.y - b.py) * 0.92 + ay * DT * DT;
+          b.px = b.x; b.py = b.y; b.x = nx; b.y = ny;
+        }
+        ctx.fillStyle = duo.paper; ctx.fillRect(0, 0, SZ, SZ);
+        ctx.fillStyle = duo.ink;
+        ctx.font = `900 ${size}px ui-sans-serif, sans-serif`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        for (const b of bodies) ctx.fillText(b.ch, b.x, b.y);
+      },
+      warm() { this.step(); },
+    };
+  },
+};
+
+const live = [];
+for (const row of document.querySelectorAll('[data-preview]')) {
+  const canvas = row.querySelector('canvas');
+  const style = getComputedStyle(row);
+  const duo = {
+    paper: style.getPropertyValue('--paper').trim(),
+    ink: style.getPropertyValue('--ink').trim(),
+  };
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = SZ * dpr; canvas.height = SZ * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  // hovering anywhere on the row steers the thumbnail
+  let cursor = null;
+  row.addEventListener('pointermove', e => {
+    const r = canvas.getBoundingClientRect();
+    cursor = {
+      x: (e.clientX - r.left) / r.width * SZ,
+      y: (e.clientY - r.top) / r.height * SZ,
+    };
+  });
+  row.addEventListener('pointerleave', () => cursor = null);
+
+  const sim = PREVIEWS[row.dataset.preview](ctx, duo, () => cursor);
+  if (reduced) sim.warm();
+  live.push(sim);
+}
+
+if (!reduced) {
+  (function frame(now) {
+    const t = now / 1000;
+    for (const sim of live) sim.step(t);
+    requestAnimationFrame(frame);
+  })(performance.now());
+}
+</script>
 </body>
 </html>
