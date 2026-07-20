@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Design Tools</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  body {
+    min-height: 100vh; background: #000; color: #eee;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 10vh 24px;
+  }
+  h1 { font-size: 14px; letter-spacing: .2em; color: #777; text-transform: uppercase; }
+  p.sub { margin-top: 8px; font-size: 13px; color: #555; max-width: 420px; text-align: center; }
+  ul { list-style: none; margin-top: 48px; width: 100%; max-width: 520px; }
+  li + li { margin-top: 12px; }
+  a.tool {
+    display: block; padding: 20px 24px; border: 1px solid #222; border-radius: 12px;
+    color: #eee; text-decoration: none; transition: border-color .15s, transform .15s;
+  }
+  a.tool:hover { border-color: #666; transform: translateX(4px); }
+  a.tool strong { display: block; font-size: 18px; }
+  a.tool span { display: block; margin-top: 4px; font-size: 13px; color: #888; }
+</style>
+</head>
+<body>
+  <h1>Design Tools</h1>
+  <p class="sub">Self-built generative design toys. Each tool is one self-contained
+     HTML file under <code>tools/</code> — no build step, no dependencies.</p>
+  <ul>
+    <li>
+      <a class="tool" href="tools/kinetic-type/index.html">
+        <strong>Kinetic Type</strong>
+        <span>Text warped by sine-wave oscillators — 4 variants: grid warp, stripes × difference, sliced liquid type, and your own warp field.</span>
+      </a>
+    </li>
+    <!-- Add the next tool here: copy a tools/<name>/index.html, then one <li> -->
+  </ul>
+</body>
+</html>

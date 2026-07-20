@@ -1,0 +1,239 @@
+<!doctype html>
+<!--
+  Kinetic Type — tool #1 of the Design Tools playground.
+  Four variants on this one page, switchable via ?variant= / the bottom bar / arrow keys.
+  Variant D's warpField() is intentionally left boring — that one is yours to write.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kinetic Type — prototype</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #000; overflow: hidden; font-family: ui-sans-serif, system-ui, sans-serif; }
+  canvas { display: block; }
+
+  /* control panel */
+  #panel {
+    position: fixed; top: 16px; left: 16px; z-index: 10;
+    background: rgba(20,20,20,.85); color: #eee; padding: 14px 16px;
+    border-radius: 10px; font-size: 12px; width: 220px;
+    backdrop-filter: blur(6px);
+  }
+  #panel label { display: block; margin-top: 10px; color: #999; }
+  #panel input[type=range] { width: 100%; }
+  #panel input[type=text] {
+    width: 100%; margin-top: 4px; padding: 4px 6px; border-radius: 6px;
+    border: 1px solid #444; background: #111; color: #eee; font-size: 12px;
+  }
+
+  /* prototype switcher — deliberately NOT styled like the design being judged */
+  #switcher {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 10;
+    display: flex; align-items: center; gap: 12px;
+    background: #fff; color: #000; border-radius: 999px; padding: 8px 16px;
+    font-size: 13px; font-weight: 600; box-shadow: 0 4px 20px rgba(0,0,0,.5);
+    user-select: none;
+  }
+  #switcher button {
+    border: 0; background: none; font-size: 16px; cursor: pointer; padding: 2px 6px;
+  }
+  #switcher span { min-width: 180px; text-align: center; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="panel">
+  <strong id="variant-title"></strong>
+  <label>Text <input type="text" id="word" value="TILL VON KRUEGER" /></label>
+  <label>Speed <input type="range" id="speed" min="0" max="3" step="0.05" value="1" /></label>
+  <label>Density <input type="range" id="density" min="4" max="60" step="1" value="24" /></label>
+  <label>Amplitude <input type="range" id="amp" min="0" max="1" step="0.01" value="0.5" /></label>
+</div>
+
+<div id="switcher">
+  <button id="prev">←</button><span id="label"></span><button id="next">→</button>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H, dpr;
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// live params from the panel
+const P = { word: 'TILL VON KRUEGER', speed: 1, density: 24, amp: 0.5 };
+document.getElementById('word').addEventListener('input', e => P.word = e.target.value || 'TYPE');
+for (const k of ['speed', 'density', 'amp'])
+  document.getElementById(k).addEventListener('input', e => P[k] = +e.target.value);
+
+/* ---------------------------------------------------------------
+   VARIANT A — text-grid warp ("BASIC SYSTEMS" look)
+   The word repeats in rows; each row is horizontally squeezed or
+   stretched by a sine field, so wave silhouettes emerge from type.
+---------------------------------------------------------------- */
+function variantA(t) {
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#000';
+  const rows = Math.round(P.density * 1.6);
+  const rowH = H / rows;
+  ctx.font = `700 ${rowH * 0.85}px ui-sans-serif, sans-serif`;
+  ctx.textBaseline = 'middle';
+  const word = P.word + '  ';
+  for (let r = 0; r < rows; r++) {
+    const y = (r + 0.5) * rowH;
+    // two stacked oscillators → organic bulge instead of a plain wave
+    const s = 1 + P.amp * 2 *
+      (0.6 * Math.sin(r * 0.35 + t * P.speed) +
+       0.4 * Math.sin(r * 0.13 - t * P.speed * 0.7));
+    ctx.save();
+    ctx.translate(W / 2, y);
+    ctx.scale(Math.max(0.05, s), 1);
+    const w = ctx.measureText(word).width;
+    const reps = Math.ceil(W / Math.max(1, w * s)) + 2;
+    for (let i = -reps; i <= reps; i++) ctx.fillText(word, i * w - w / 2, 0);
+    ctx.restore();
+  }
+}
+
+/* ---------------------------------------------------------------
+   VARIANT B — op-art stripes + difference text
+   Horizontal bars breathe via a sine field; a giant word is drawn
+   with 'difference' blending so it inverts whatever it overlaps.
+---------------------------------------------------------------- */
+function variantB(t) {
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#fff';
+  const bars = Math.round(P.density * 1.5);
+  const cell = H / bars;
+  for (let i = 0; i < bars; i++) {
+    const y = i * cell;
+    // bar thickness oscillates per-row and per-time
+    const h = cell * (0.5 + 0.5 * P.amp * Math.sin(i * 0.5 + t * P.speed * 1.4));
+    ctx.fillRect(0, y + (cell - h) / 2, W, h);
+  }
+  ctx.save();
+  ctx.globalCompositeOperation = 'difference';
+  ctx.fillStyle = '#fff';
+  const size = Math.min(W / (P.word.length * 0.62), H * 0.42);
+  ctx.font = `900 ${size}px ui-sans-serif, sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const wobble = Math.sin(t * P.speed) * H * 0.06 * P.amp;
+  ctx.fillText(P.word, W / 2, H / 2 + wobble);
+  ctx.restore();
+  ctx.textAlign = 'left';
+}
+
+/* ---------------------------------------------------------------
+   VARIANT C — sliced liquid type
+   One giant word rendered offscreen, then redrawn in vertical
+   slices, each slice pushed up/down by stacked sine oscillators.
+---------------------------------------------------------------- */
+const off = document.createElement('canvas');
+const offCtx = off.getContext('2d');
+function variantC(t) {
+  off.width = W; off.height = H;
+  offCtx.fillStyle = '#000'; offCtx.fillRect(0, 0, W, H);
+  offCtx.fillStyle = '#fff';
+  const size = Math.min(W / (P.word.length * 0.58), H * 0.5);
+  offCtx.font = `900 ${size}px ui-sans-serif, sans-serif`;
+  offCtx.textAlign = 'center'; offCtx.textBaseline = 'middle';
+  offCtx.fillText(P.word, W / 2, H / 2);
+
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  const slices = Math.round(P.density * 8);
+  const sw = W / slices;
+  for (let i = 0; i < slices; i++) {
+    const x = i * sw;
+    const dy = H * 0.25 * P.amp *
+      (Math.sin(i * 0.09 + t * P.speed * 1.2) * 0.7 +
+       Math.sin(i * 0.023 - t * P.speed * 0.6) * 0.3);
+    const stretch = 1 + 0.4 * P.amp * Math.sin(i * 0.05 + t * P.speed);
+    ctx.drawImage(off, x, 0, sw, H, x, dy + H * (1 - stretch) / 2, sw, H * stretch);
+  }
+}
+
+/* ---------------------------------------------------------------
+   VARIANT D — YOURS.
+   A grid of squares is drawn for you; each square asks warpField()
+   how big it should be (0..1) at its position and time. Right now
+   it returns a boring constant. Replace the body with your own
+   oscillator mix and watch what emerges. Ideas to steal:
+     - Math.sin(x * freq + t)                    → vertical wave bands
+     - Math.sin(x * a + t) * Math.sin(y * b - t) → interference grid
+     - distance from centre: Math.hypot(x - 0.5, y - 0.5) → ripples
+   x and y arrive normalised 0..1; p.amp / p.speed are the sliders.
+---------------------------------------------------------------- */
+function warpField(x, y, t, p) {
+  // TODO(Till): make this interesting — mix 2-3 oscillators, return 0..1
+  return 0.5;
+}
+
+function variantD(t) {
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#fff';
+  ctx.globalCompositeOperation = 'difference';
+  const cols = Math.round(P.density * 1.5);
+  const cell = W / cols;
+  const rows = Math.ceil(H / cell);
+  for (let gy = 0; gy < rows; gy++) {
+    for (let gx = 0; gx < cols; gx++) {
+      const v = warpField(gx / cols, gy / rows, t, P);
+      const s = Math.max(0, Math.min(1.6, v)) * cell * (0.4 + P.amp * 1.4);
+      const cx = (gx + 0.5) * cell, cy = (gy + 0.5) * cell;
+      ctx.fillRect(cx - s / 2, cy - s / 2, s, s);
+    }
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+/* --------------------------- switcher --------------------------- */
+const VARIANTS = [
+  { key: 'A', name: 'Text-grid warp', fn: variantA },
+  { key: 'B', name: 'Stripes × difference', fn: variantB },
+  { key: 'C', name: 'Sliced liquid type', fn: variantC },
+  { key: 'D', name: 'Your warp field', fn: variantD },
+];
+let current = Math.max(0, VARIANTS.findIndex(v =>
+  v.key === new URLSearchParams(location.search).get('variant')));
+
+function setVariant(i) {
+  current = (i + VARIANTS.length) % VARIANTS.length;
+  const v = VARIANTS[current];
+  document.getElementById('label').textContent = `${v.key} — ${v.name}`;
+  document.getElementById('variant-title').textContent = v.name;
+  try { // history API is unavailable on some file:// setups — switching still works
+    const url = new URL(location.href);
+    url.searchParams.set('variant', v.key);
+    history.replaceState(null, '', url);
+  } catch {}
+}
+document.getElementById('prev').onclick = () => setVariant(current - 1);
+document.getElementById('next').onclick = () => setVariant(current + 1);
+window.addEventListener('keydown', e => {
+  if (/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
+  if (e.key === 'ArrowLeft') setVariant(current - 1);
+  if (e.key === 'ArrowRight') setVariant(current + 1);
+});
+setVariant(current);
+
+/* -------------------------- render loop ------------------------- */
+let start = performance.now();
+(function frame(now) {
+  VARIANTS[current].fn((now - start) / 1000);
+  requestAnimationFrame(frame);
+})(start);
+</script>
+</body>
+</html>
