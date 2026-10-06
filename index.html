@@ -91,6 +91,16 @@
         </div>
       </a>
     </li>
+    <li>
+      <a class="tool" href="tools/dot-bridge/index.html" data-preview="bridge"
+         style="--paper:#09090b; --ink:#dcdfe3;">
+        <canvas aria-hidden="true"></canvas>
+        <div class="txt">
+          <strong>Dot Bridge</strong>
+          <span>Draw on a dot grid; strokes become circles joined by smooth necks. Symmetry, grow, and SVG export for Figma.</span>
+        </div>
+      </a>
+    </li>
     <!-- Add the next tool here: copy a tools/<name>/index.html, one <li>,
          and a mini preview in the PREVIEWS map below -->
   </ul>
@@ -296,6 +306,69 @@ const PREVIEWS = {
         for (const b of bodies) ctx.fillText(b.ch, b.x, b.y);
       },
       warm() { this.step(); },
+    };
+  },
+  bridge(ctx, duo, getCur) {
+    // a mirrored random walk crawls the grid; joints use the tool's fillet geometry
+    const sp = SZ / 7, c = SZ / 2;
+    const bridge = (ax, ay, r, bx, by, rb, neck) => {
+      const dx = bx - ax, dy = by - ay, d = Math.hypot(dx, dy);
+      const w = neck * Math.min(r, rb), ux = dx / d, uy = dy / d;
+      let lo = Math.max(0, (d - r - rb) / 2) + 1e-6, hi = lo + 60 * d;
+      const waist = R => {
+        const a = r + R, b = rb + R, x = (a * a - b * b + d * d) / (2 * d);
+        return Math.sqrt(Math.max(0, a * a - x * x)) - R;
+      };
+      for (let k = 0; k < 40; k++) { const m = (lo + hi) / 2; if (waist(m) < w) lo = m; else hi = m; }
+      const R = lo, a = r + R, b = rb + R, x = (a * a - b * b + d * d) / (2 * d);
+      const h = Math.sqrt(Math.max(0, a * a - x * x));
+      const p = new Path2D();
+      const side = s => {
+        const Cx = ax + ux * x - uy * h * s, Cy = ay + uy * x + ux * h * s;
+        return { Cx, Cy, ta: Math.atan2(ay - Cy, ax - Cx), tb: Math.atan2(by - Cy, bx - Cx) };
+      };
+      const t = side(1), u = side(-1);
+      const ccw = (A, B) => Math.sin(B - A) < 0;
+      p.arc(t.Cx, t.Cy, R, t.ta, t.tb, ccw(t.ta, t.tb));
+      p.arc(u.Cx, u.Cy, R, u.tb, u.ta, ccw(u.tb, u.ta));
+      p.closePath();
+      return p;
+    };
+    const DIRS = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+    let snake = [[0, 0]], acc = 0, lastT = 0;
+    const stepSnake = () => {
+      const [x, y] = snake[snake.length - 1];
+      const opts = DIRS.map(d => [x + d[0], y + d[1]])
+        .filter(q => Math.abs(q[0]) <= 2 && Math.abs(q[1]) <= 2 &&
+                     !snake.some(s => s[0] === q[0] && s[1] === q[1]));
+      if (!opts.length) { snake = [[0, 0]]; return; }
+      snake.push(opts[Math.floor(Math.random() * opts.length)]);
+      if (snake.length > 5) snake.shift();
+    };
+    const mirror = ([x, y]) => [[x, y], [-x, y], [x, -y], [-x, -y]];
+    return {
+      step(t) {
+        acc += t - lastT; lastT = t;
+        if (acc > 0.45) { acc = 0; stepSnake(); }
+        const cur = getCur();
+        ctx.fillStyle = duo.paper; ctx.fillRect(0, 0, SZ, SZ);
+        ctx.fillStyle = duo.ink;
+        const radius = ([x, y]) => {
+          let r = sp * 0.42;
+          if (cur) r *= 1 + 0.5 * Math.exp(-((c + x * sp - cur.x) ** 2 + (c + y * sp - cur.y) ** 2) / 300);
+          return r;
+        };
+        for (let i = 0; i < snake.length; i++) {
+          const ms = mirror(snake[i]), ns = i ? mirror(snake[i - 1]) : null;
+          for (let m = 0; m < 4; m++) {
+            const p = ms[m], r = radius(p);
+            ctx.beginPath(); ctx.arc(c + p[0] * sp, c + p[1] * sp, r, 0, Math.PI * 2); ctx.fill();
+            if (ns) ctx.fill(bridge(c + ns[m][0] * sp, c + ns[m][1] * sp, radius(ns[m]),
+                                    c + p[0] * sp, c + p[1] * sp, r, 0.3));
+          }
+        }
+      },
+      warm() { for (let i = 0; i < 5; i++) stepSnake(); this.step(0); },
     };
   },
 };
