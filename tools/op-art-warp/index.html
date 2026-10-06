@@ -1,0 +1,789 @@
+<!doctype html>
+<!--
+  Op-Art Warp — a mark-family tool of the Design Tools playground.
+  A Bridget Riley / Vasarely field gets bulged, pinched and twisted by
+  lenses you place and drag; symmetry mirrors every lens. Three base
+  fields via ?variant=: A stripes, B checker, C rings. Geometry is
+  warped as vectors (not pixels), so export SVG / PNG or copy SVG into
+  Figma. Animate makes the lenses breathe (groundwork for motion export).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Op-Art Warp</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #000; overflow: hidden; font-family: ui-sans-serif, system-ui, sans-serif; color-scheme: dark; }
+  #stage { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+
+  /* control panel */
+  #panel {
+    position: fixed; top: 16px; left: 16px; z-index: 10;
+    background: rgba(20,20,20,.85); color: #eee; padding: 14px 16px;
+    border-radius: 10px; font-size: 12px; width: 232px;
+    backdrop-filter: blur(6px);
+    max-height: calc(100% - 100px); overflow-y: auto;
+  }
+  #panel .head { display: flex; justify-content: space-between; align-items: center; }
+  #panel .head button { margin: 0; width: 24px; height: 20px; padding: 0; }
+  #panel.collapsed .body { display: none; }
+  #panel [hidden] { display: none; }
+  #panel label { display: block; margin-top: 10px; color: #999; }
+  #panel input[type=range] { width: 100%; }
+  #panel select {
+    width: 100%; margin-top: 4px; padding: 4px; border-radius: 6px;
+    border: 1px solid #444; background: #111; color: #eee; font-size: 12px;
+  }
+  #panel .check { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: #999; }
+  #panel .check input { margin: 0; }
+  #panel button {
+    margin-top: 12px; width: 100%; padding: 6px; border-radius: 6px;
+    border: 1px solid #444; background: #111; color: #eee; font-size: 12px; cursor: pointer;
+  }
+  #panel button:focus-visible, #panel select:focus-visible, #panel input:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+  #panel .row { display: flex; gap: 6px; }
+  #panel .row button { flex: 1; margin-top: 8px; }
+  #panel .tools button { padding: 6px 0; }
+  #panel .tools button.on { background: #eee; color: #111; border-color: #eee; }
+  #panel .hint { margin-top: 10px; color: #666; line-height: 1.5; }
+  #panel kbd { font: inherit; color: #999; }
+
+  /* ink & paper — shared color block, identical across tools
+     (overrides the generic #panel button rule above) */
+  #panel .swatches { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+  #panel .swatches input[type=color] {
+    flex: 1; height: 26px; padding: 1px; border: 1px solid #444;
+    border-radius: 6px; background: #111; cursor: pointer;
+  }
+  #panel .swatches button {
+    margin-top: 0; width: 30px; height: 26px; padding: 0;
+    border: 1px solid #444; background: #111; color: #eee;
+    border-radius: 6px; cursor: pointer;
+  }
+  #panel .presets { display: flex; gap: 5px; margin-top: 8px; }
+  #panel .presets button {
+    flex: 1; margin-top: 0; width: auto; height: 16px; padding: 0;
+    border: 1px solid #444; border-radius: 4px;
+    overflow: hidden; display: flex; cursor: pointer; background: none;
+  }
+  #panel .presets span { flex: 1; }
+
+  /* prototype switcher — deliberately NOT styled like the design being judged */
+  #switcher {
+    position: fixed; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%); z-index: 10;
+    display: flex; align-items: center; gap: 12px;
+    background: #fff; color: #000; border-radius: 999px; padding: 8px 16px;
+    font-size: 13px; font-weight: 600; box-shadow: 0 4px 20px rgba(0,0,0,.5);
+    user-select: none;
+  }
+  #switcher button { border: 0; background: none; color: #000; font-size: 16px; cursor: pointer; padding: 2px 6px; }
+  #switcher span { min-width: 140px; text-align: center; }
+
+  /* mark kit toast — shared across mark tools */
+  #toast {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 20;
+    background: #fff; color: #000; padding: 8px 14px; border-radius: 999px;
+    font-size: 13px; font-weight: 600; opacity: 0; transition: opacity .2s; pointer-events: none;
+  }
+  #toast.on { opacity: 1; }
+
+  @media (max-width: 600px) {
+    #panel { width: auto; right: 16px; max-height: 50%; }
+    #switcher span { min-width: 90px; }
+  }
+  @media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
+</style>
+</head>
+<body>
+<svg id="stage" xmlns="http://www.w3.org/2000/svg" aria-label="Warp canvas"></svg>
+
+<div id="panel">
+  <div class="head">
+    <strong id="variant-title"></strong>
+    <button id="collapse" title="Hide panel" aria-expanded="true">–</button>
+  </div>
+  <div class="body">
+    <label>Tool</label>
+    <div class="row tools" id="tools">
+      <button data-tool="bulge" title="Bulge — magnify (1 / B)">Bulge</button>
+      <button data-tool="pinch" title="Pinch — shrink (2 / P)">Pinch</button>
+      <button data-tool="twist" title="Twist — swirl (3 / T)">Twist</button>
+      <button data-tool="move" title="Move — drag lenses only (4 / V)">Move</button>
+    </div>
+    <label>Symmetry
+      <select id="sym">
+        <option value="off">Off</option>
+        <option value="x">Mirror ↔</option>
+        <option value="y">Mirror ↕</option>
+        <option value="quad">Quad</option>
+        <option value="kaleido">Kaleido (8)</option>
+      </select>
+    </label>
+    <label id="freq-label">Band size <input type="range" id="freq" min="8" max="90" step="1" value="22" /></label>
+    <label id="angle-wrap">Angle <input type="range" id="angle" min="0" max="180" step="1" value="90" /></label>
+    <label>Warp strength <input type="range" id="gain" min="0" max="2" step="0.01" value="1" /></label>
+    <label>Lens radius (new lenses) <input type="range" id="radius" min="30" max="420" step="1" value="170" /></label>
+    <label>Smoothing <input type="range" id="smooth" min="1" max="10" step="1" value="7" /></label>
+    <label class="check"><input type="checkbox" id="guide" /> Show lenses</label>
+    <label class="check"><input type="checkbox" id="animate" /> Animate (breathe)</label>
+    <label>Colors — ink ⇄ paper</label>
+    <div class="swatches">
+      <input type="color" id="ink" value="#000000" title="Ink" />
+      <button id="swap" title="Swap ink and paper">⇄</button>
+      <input type="color" id="paper" value="#ffffff" title="Paper" />
+    </div>
+    <div class="presets" id="presets"></div>
+    <div class="row">
+      <button id="undo" title="Undo (⌘Z)">Undo</button>
+      <button id="redo" title="Redo (⇧⌘Z)">Redo</button>
+    </div>
+    <div class="row">
+      <button id="shuffle" title="Random lenses (R)">Shuffle</button>
+      <button id="clear" title="Remove every lens">Clear lenses</button>
+    </div>
+    <div class="row">
+      <button id="svg-out">SVG</button>
+      <button id="png-out">PNG</button>
+      <button id="copy-out" title="Copy SVG markup, then paste into Figma">Copy</button>
+    </div>
+    <label class="check"><input type="checkbox" id="bg-out" /> Include paper in export</label>
+    <div class="hint">
+      click to add a lens · drag its center to move ·
+      <kbd>⇧</kbd>drag or scroll = radius · <kbd>⌥</kbd>scroll = strength ·
+      <kbd>⌥</kbd>click / right-click deletes ·
+      <kbd>1–4</kbd> tools · <kbd>M</kbd> symmetry · <kbd>H</kbd> lenses ·
+      <kbd>A</kbd> animate · <kbd>R</kbd> shuffle · <kbd>⌘Z</kbd> undo ·
+      export = visible viewport
+    </div>
+  </div>
+</div>
+
+<div id="switcher">
+  <button id="prev" aria-label="Previous variant">←</button><span id="label"></span><button id="next" aria-label="Next variant">→</button>
+</div>
+<div id="toast" role="status"></div>
+
+<script>
+/* ================================================================
+   MARK KIT — shared block, copied verbatim across the mark tools
+   (dot-bridge, truchet, contour-rings, l-system, op-art-warp).
+   Symmetry matrices, undo history, toast, and SVG / PNG / clipboard
+   export wired to #svg-out, #png-out, #copy-out and #bg-out.
+   Edit it in one tool, then paste the same block into the others.
+================================================================ */
+const NS = 'http://www.w3.org/2000/svg';
+/* symmetry as 2×2 integer matrices [a,b,c,d]: (x,y) → (ax+by, cx+dy) */
+const MATS = {
+  off:  [[1,0,0,1]],
+  x:    [[1,0,0,1], [-1,0,0,1]],
+  y:    [[1,0,0,1], [1,0,0,-1]],
+  quad: [[1,0,0,1], [-1,0,0,1], [1,0,0,-1], [-1,0,0,-1]],
+  kaleido: [[1,0,0,1], [-1,0,0,1], [1,0,0,-1], [-1,0,0,-1],
+            [0,1,1,0], [0,-1,1,0], [0,1,-1,0], [0,-1,-1,0]],
+};
+const SYM_ORDER = Object.keys(MATS);
+const tf = (m, x, y) => [m[0] * x + m[1] * y, m[2] * x + m[3] * y];
+/* does m swap the two diagonals of a square? (mirror-like maps do) */
+const flipsDiagonal = m => { const [p, q] = tf(m, 1, 1); return p * q < 0; };
+const f2 = n => +n.toFixed(2);
+
+/* undo history over string snapshots; onChange(snapshot) after every edit */
+function History(snapshot, restore, onChange) {
+  const u = [], r = [];
+  let before = null;
+  return {
+    begin() { before = snapshot(); },
+    commit() {
+      const now = snapshot();
+      if (before !== null && now !== before) {
+        u.push(before); if (u.length > 200) u.shift();
+        r.length = 0;
+      }
+      before = null; onChange(now);
+    },
+    change(fn) { this.begin(); fn(); this.commit(); },
+    undo() { if (!u.length) return; r.push(snapshot()); restore(u.pop()); onChange(snapshot()); },
+    redo() { if (!r.length) return; u.push(snapshot()); restore(r.pop()); onChange(snapshot()); },
+    get canUndo() { return u.length > 0; },
+    get canRedo() { return r.length > 0; },
+  };
+}
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('on');
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('on'), 1800);
+}
+function download(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+/* getSVG(includePaper) → standalone SVG string, or null when empty */
+function wireExport(getSVG, name) {
+  const bg = () => !!document.getElementById('bg-out')?.checked;
+  const need = () => { const s = getSVG(bg()); if (!s) toast('Nothing to export yet'); return s; };
+  document.getElementById('svg-out').onclick = () => {
+    const s = need(); if (s) download(new Blob([s], { type: 'image/svg+xml' }), name + '.svg');
+  };
+  document.getElementById('png-out').onclick = () => {
+    const s = need(); if (!s) return;
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas'), k = 3;
+      c.width = img.width * k; c.height = img.height * k;
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob(b => download(b, name + '.png'));
+    };
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s);
+  };
+  document.getElementById('copy-out').onclick = () => {
+    const s = need(); if (!s) return;
+    navigator.clipboard.writeText(s)
+      .then(() => toast('SVG copied — paste into Figma'))
+      .catch(() => toast('Clipboard blocked — use the SVG button'));
+  };
+}
+/* ======================== end MARK KIT ======================== */
+
+const svg = document.getElementById('stage');
+let W, H, cx, cy;
+
+/* ------------------------------ state ---------------------------
+   A lens is { x, y, r, s, type }: center relative to the canvas
+   center, radius, strength magnitude and one of bulge / pinch /
+   twist. Only the lenses you placed are stored; symmetry copies are
+   derived at render time, so changing symmetry never loses work.
+---------------------------------------------------------------- */
+const DEFAULT_S = { bulge: 0.75, pinch: 0.6, twist: 1 };
+const S = { sym: 'quad', lenses: [] };
+const P = { freq: 22, angle: 90, gain: 1, radius: 170, smooth: 7, guide: false, animate: false, tool: 'bulge' };
+const r1 = n => Math.round(n * 10) / 10;
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const det = m => m[0] * m[3] - m[1] * m[2];
+
+/* every lens under every symmetry matrix. Copies that land on top of
+   their own original (a lens on a mirror axis) are dropped, so a lens
+   never doubles its strength. Twist direction flips under mirrors
+   (det < 0) and survives pure rotations. */
+function instances() {
+  const out = [];
+  S.lenses.forEach((L, src) => {
+    for (const m of MATS[S.sym]) {
+      const [x, y] = tf(m, L.x, L.y);
+      if (out.some(o => o.src === src && Math.abs(o.x - x) < 0.5 && Math.abs(o.y - y) < 0.5)) continue;
+      out.push({ src, m, x, y, r: L.r, s: L.s, type: L.type, flip: det(m) < 0 });
+    }
+  });
+  return out;
+}
+
+/* ------------------------------ warp ----------------------------
+   Each lens acts only inside its disk, weighted by the falloff
+   f = (1 − (d/r)²)², which is smooth at the rim. Two stages:
+   1. bulge / pinch are velocity fields pushing along the offset from
+      the center (k·f·u); they are summed and the point is flowed
+      along the sum for unit time (midpoint steps). A flow never
+      folds, so overlapping lenses blend instead of tearing.
+      k = ln(1 + s) gives a centre magnification of exactly 1 + s.
+   2. twist rotates the result around each twist center by a·f
+      (exact rotations, summed as displacements).
+   Both stages are order-free, so symmetric lenses give symmetric art.
+---------------------------------------------------------------- */
+let LZ = [], LB = [], LT = [], NSTEP = 1, WX = 0, WY = 0, VX = 0, VY = 0;
+function compileLenses() {
+  const t = performance.now() / 1000;
+  LZ = instances().map(I => {
+    // animate: each placed lens breathes on its own phase; its
+    // symmetry copies share it, so the pattern stays symmetric
+    const amp = P.animate ? 0.6 + 0.4 * Math.cos(t * 1.7 + I.src * 1.9) : 1;
+    const v = I.s * P.gain * amp;
+    return {
+      x: cx + I.x, y: cy + I.y, r: I.r, r2: I.r * I.r, twist: I.type === 'twist',
+      k: I.type === 'bulge' ? Math.log(1 + v) : Math.log(1 - clamp(v, 0, 0.95)),
+      a: v * 2.4 * (I.flip ? -1 : 1),
+    };
+  });
+  LB = LZ.filter(L => !L.twist); LT = LZ.filter(L => L.twist);
+  // step count from the steepest spot: the summed slope of all
+  // bulges / pinches overlapping any one of them
+  let lip = 0;
+  for (const A of LB) {
+    let sum = 0;
+    for (const B of LB) if (Math.hypot(A.x - B.x, A.y - B.y) < A.r + B.r) sum += Math.abs(B.k);
+    lip = Math.max(lip, sum);
+  }
+  NSTEP = clamp(Math.ceil(lip), 1, 6);
+}
+// summed bulge / pinch velocity at (x,y) → VX, VY; false when outside every disk
+function vel(x, y) {
+  let vx = 0, vy = 0, hit = false;
+  for (let i = 0; i < LB.length; i++) {
+    const L = LB[i], ux = x - L.x, uy = y - L.y, d2 = ux * ux + uy * uy;
+    if (d2 >= L.r2) continue;
+    const q = 1 - d2 / L.r2, f = q * q;
+    hit = true; vx += ux * L.k * f; vy += uy * L.k * f;
+  }
+  VX = vx; VY = vy;
+  return hit;
+}
+function warp(x, y) {
+  WX = x; WY = y;
+  if (vel(x, y)) { // untouched points skip the flow (and stay cheap)
+    const h = 1 / NSTEP;
+    for (let s = 0; s < NSTEP; s++) {
+      if (s) vel(WX, WY);
+      vel(WX + VX * h / 2, WY + VY * h / 2);
+      WX += VX * h; WY += VY * h;
+    }
+  }
+  let dx = 0, dy = 0;
+  for (let i = 0; i < LT.length; i++) {
+    const L = LT[i], ux = WX - L.x, uy = WY - L.y, d2 = ux * ux + uy * uy;
+    if (d2 >= L.r2) continue;
+    const q = 1 - d2 / L.r2, f = q * q, c = Math.cos(L.a * f), s = Math.sin(L.a * f);
+    dx += ux * c - uy * s - ux; dy += ux * s + uy * c - uy;
+  }
+  WX += dx; WY += dy;
+}
+/* true when segment a→b misses every lens disk (+pad) — such a piece
+   is untouched by the warp and needs no extra samples */
+function quiet(ax, ay, bx, by, pad) {
+  const ex = bx - ax, ey = by - ay, ee = ex * ex + ey * ey || 1;
+  for (let i = 0; i < LZ.length; i++) {
+    const L = LZ[i];
+    const t = clamp(((L.x - ax) * ex + (L.y - ay) * ey) / ee, 0, 1);
+    const px = ax + ex * t - L.x, py = ay + ey * t - L.y, rr = L.r + pad;
+    if (px * px + py * py < rr * rr) return false;
+  }
+  return true;
+}
+
+/* -------------------------- resampling --------------------------
+   A source curve src(u) is cut into coarse pieces. Pieces that miss
+   every lens pass through as-is (for straight curves a run of them
+   collapses to one segment); the rest are cut to STEP-sized pieces
+   and bisected again wherever the warp stretches a piece past STEP.
+   out is a flat [x0, y0, x1, y1, …] array of warped points.
+---------------------------------------------------------------- */
+let STEP = 5, STEP2 = 25;
+function bisect(src, ua, ub, out, depth) {
+  const ax = out[out.length - 2], ay = out[out.length - 1];
+  const p = src(ub); warp(p[0], p[1]);
+  if (depth < 5 && (WX - ax) ** 2 + (WY - ay) ** 2 > STEP2) {
+    const um = (ua + ub) / 2;
+    bisect(src, ua, um, out, depth + 1);
+    bisect(src, um, ub, out, depth + 1);
+  } else out.push(WX, WY);
+}
+function trace(src, u0, u1, n, out, straight, pad, skipFirst) {
+  let a = src(u0), held = null;
+  if (!skipFirst) { warp(a[0], a[1]); out.push(WX, WY); }
+  for (let i = 1; i <= n; i++) {
+    const ua = u0 + (u1 - u0) * (i - 1) / n, ub = u0 + (u1 - u0) * i / n, b = src(ub);
+    if (quiet(a[0], a[1], b[0], b[1], pad)) {
+      if (straight) held = b; else out.push(b[0], b[1]);
+    } else {
+      if (held) { out.push(held[0], held[1]); held = null; }
+      const m = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / STEP));
+      for (let j = 1; j <= m; j++) bisect(src, ua + (ub - ua) * (j - 1) / m, ua + (ub - ua) * j / m, out, 0);
+    }
+    a = b;
+  }
+  if (held) out.push(held[0], held[1]);
+  return out;
+}
+const line = (ax, ay, bx, by) => u => [ax + (bx - ax) * u, ay + (by - ay) * u];
+const COARSE = 48;
+
+/* flat point list → "Mx yLx y x y…Z" (reverse walks it backwards) */
+function poly(pts, reverse, close) {
+  const n = pts.length / 2;
+  let d = '';
+  for (let k = 0; k < n; k++) {
+    const i = reverse ? n - 1 - k : k;
+    d += (k === 0 ? 'M' : k === 1 ? 'L' : ' ') + r1(pts[2 * i]) + ' ' + r1(pts[2 * i + 1]);
+  }
+  return close ? d + 'Z' : d;
+}
+function polyJoin(a, b) { // a forward, then b backwards, closed
+  const n = b.length / 2;
+  let d = poly(a, false, false);
+  for (let i = n - 1; i >= 0; i--) d += ' ' + r1(b[2 * i]) + ' ' + r1(b[2 * i + 1]);
+  return d + 'Z';
+}
+
+/* ---------------------------- fields ----------------------------
+   Source geometry must cover the viewport plus every lens's reach
+   (a lens maps its own disk onto itself), hence the margin.
+---------------------------------------------------------------- */
+function margin() {
+  // the largest lens, or how far any disk pokes past the viewport
+  let m = 0;
+  for (const L of LZ) m = Math.max(m, L.r, Math.abs(L.x - cx) + L.r - W / 2, Math.abs(L.y - cy) + L.r - H / 2);
+  return Math.min(m, 2000) + P.freq + 8;
+}
+
+// A — stripes: boundaries at (k + ½)·w so a band is centered on the
+// canvas center (mirror-symmetric); ink every other band
+function stripes() {
+  const w = P.freq, th = P.angle * Math.PI / 180, m = margin();
+  const tx = Math.cos(th), ty = Math.sin(th), nx = -ty, ny = tx;
+  const D = Math.hypot(Math.max(cx, W - cx) + m, Math.max(cy, H - cy) + m);
+  const K = Math.ceil(D / w), n = Math.ceil(2 * D / COARSE);
+  const bound = k => {
+    const ox = cx + nx * (k + 0.5) * w, oy = cy + ny * (k + 0.5) * w;
+    return trace(line(ox - tx * D, oy - ty * D, ox + tx * D, oy + ty * D), 0, 1, n, [], true, 2, false);
+  };
+  let d = '', prev = bound(-K - 1);
+  for (let k = -K; k <= K; k++) {
+    const cur = bound(k);
+    if (!(k & 1)) d += polyJoin(prev, cur); // band between boundary k-1 and k
+    prev = cur;
+  }
+  return d;
+}
+
+// B — checker: cell (i,j) is centered on (i·w, j·w), so the canvas
+// center sits mid-cell and every mirror keeps cell colors; ink when
+// i + j is even. Each edge is traced, so cells bend as quads.
+function checker() {
+  const w = P.freq, m = margin(), h = w / 2;
+  const i0 = Math.floor((-cx - m) / w), i1 = Math.ceil((W - cx + m) / w);
+  const j0 = Math.floor((-cy - m) / w), j1 = Math.ceil((H - cy + m) / w);
+  const n = Math.max(1, Math.ceil(w / COARSE));
+  let d = '';
+  for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+    if ((i + j) & 1) continue;
+    const x0 = cx + i * w - h, y0 = cy + j * w - h, x1 = x0 + w, y1 = y0 + w;
+    const out = [];
+    trace(line(x0, y0, x1, y0), 0, 1, n, out, true, 2, false);
+    trace(line(x1, y0, x1, y1), 0, 1, n, out, true, 2, true);
+    trace(line(x1, y1, x0, y1), 0, 1, n, out, true, 2, true);
+    trace(line(x0, y1, x0, y0), 0, 1, n, out, true, 2, true);
+    out.length -= 2; // last point repeats the first; Z closes it
+    d += poly(out, false, true);
+  }
+  return d;
+}
+
+// C — rings: concentric circles of radius k·w; drawn as one path with
+// evenodd fill, so the disk and every second annulus come out ink.
+// Untouched arcs are sampled for ≤0.1px chord error only.
+function rings() {
+  const w = P.freq, m = margin();
+  const D = Math.hypot(Math.max(cx, W - cx) + m, Math.max(cy, H - cy) + m);
+  let d = '';
+  for (let k = 1; k * w - w <= D; k++) {
+    const R = k * w, arc = clamp(Math.sqrt(0.8 * R), 3, 40);
+    const n = Math.max(24, Math.ceil(2 * Math.PI * R / arc));
+    const sag = R * (1 - Math.cos(Math.PI / n)) + 2;
+    const out = trace(u => [cx + R * Math.cos(u), cy + R * Math.sin(u)], 0, 2 * Math.PI, n, [], false, sag, false);
+    out.length -= 2;
+    d += poly(out, false, true);
+  }
+  return d;
+}
+
+function buildArt() {
+  STEP = 15 - P.smooth * 1.2; STEP2 = (STEP * 1.25) ** 2;
+  compileLenses();
+  const V = VARIANTS[current].key;
+  const d = V === 'A' ? stripes() : V === 'B' ? checker() : rings();
+  return `<path fill="${C.ink}"${V === 'C' ? ' fill-rule="evenodd"' : ''} d="${d}"/>`;
+}
+
+function render() {
+  let html = `<rect width="${W}" height="${H}" fill="${C.paper}"/>`;
+  html += buildArt();
+  if (P.guide) {
+    // lens disks + centers: placed lens solid, symmetry copies dashed
+    const st = `fill="none" stroke="#fff" stroke-width="1.5" style="mix-blend-mode:difference"`;
+    for (const I of instances()) {
+      const x = f2(cx + I.x), y = f2(cy + I.y), dash = I.m === MATS[S.sym][0] ? '' : ' stroke-dasharray="5 5"';
+      html += `<circle cx="${x}" cy="${y}" r="${f2(I.r)}" ${st}${dash}/>`;
+      const g = I.type === 'bulge' ? `M${x - 6} ${y}h12M${x} ${y - 6}v12`
+        : I.type === 'pinch' ? `M${x - 6} ${y}h12`
+        : `M${x + 6} ${y}A6 6 0 1 ${I.flip ? 0 : 1} ${x} ${y - 6}`;
+      html += `<circle cx="${x}" cy="${y}" r="10" ${st}/><path d="${g}" ${st}/>`;
+    }
+    const ax = `stroke="#fff" stroke-width="1.5" stroke-dasharray="6 6" style="mix-blend-mode:difference"`;
+    if (['x', 'quad', 'kaleido'].includes(S.sym)) html += `<line x1="${cx}" y1="0" x2="${cx}" y2="${H}" ${ax}/>`;
+    if (['y', 'quad', 'kaleido'].includes(S.sym)) html += `<line x1="0" y1="${cy}" x2="${W}" y2="${cy}" ${ax}/>`;
+    if (S.sym === 'kaleido') html += `<path d="M${cx - H} ${cy - H}L${cx + H} ${cy + H}M${cx - H} ${cy + H}L${cx + H} ${cy - H}" ${ax}/>`;
+  }
+  svg.innerHTML = html;
+  document.getElementById('undo').disabled = !hist.canUndo;
+  document.getElementById('redo').disabled = !hist.canRedo;
+}
+// coalesce pointer-driven renders to one per frame (the animation
+// loop renders every frame anyway)
+let queued = 0;
+function schedule() {
+  if (queued || animId) return;
+  queued = requestAnimationFrame(() => { queued = 0; render(); });
+}
+
+/* export = the visible viewport; the art is clipped by the viewBox */
+function exportSVG(withPaper) {
+  if (!W || !H) return null;
+  return `<svg xmlns="${NS}" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
+    (withPaper ? `<rect width="${W}" height="${H}" fill="${C.paper}"/>` : '') +
+    buildArt() + `</svg>`;
+}
+
+/* ------------------------- undo / storage ---------------------- */
+const serialize = () => JSON.stringify({ sym: S.sym, lenses: S.lenses });
+function restore(str) {
+  const d = JSON.parse(str);
+  if (!MATS[d.sym] || !Array.isArray(d.lenses)) return;
+  S.sym = d.sym;
+  S.lenses = d.lenses.filter(L => DEFAULT_S[L.type] && isFinite(L.x + L.y + L.r + L.s)).map(L => ({ ...L }));
+  symEl.value = S.sym;
+}
+const hist = History(serialize, restore, snap => {
+  try { localStorage.setItem('op-art-warp', snap); } catch {}
+  if (W) render();
+});
+
+/* ----------------------------- input ----------------------------
+   Hit-testing runs on the symmetry copies too: grabbing a copy
+   drags its original through the inverse matrix (MATS are
+   orthogonal, so the inverse is the transpose).
+---------------------------------------------------------------- */
+let drag = null;
+function at(e) {
+  const b = svg.getBoundingClientRect();
+  return [e.clientX - b.left - cx, e.clientY - b.top - cy];
+}
+// nearest lens copy whose center is within 14px — or, with inside,
+// whose disk contains the point
+function pick(x, y, inside) {
+  let best = null, bd = Infinity;
+  for (const I of instances()) {
+    const d = Math.hypot(x - I.x, y - I.y);
+    if ((d < 14 || (inside && d < I.r)) && d < bd) { bd = d; best = I; }
+  }
+  return best && Object.assign(best, { d: bd });
+}
+function remove(I) { if (I) hist.change(() => S.lenses.splice(I.src, 1)); }
+
+svg.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  const [x, y] = at(e);
+  if (e.altKey) { remove(pick(x, y, true)); return; }
+  let I;
+  if (e.shiftKey) {
+    I = pick(x, y, true);
+    if (!I) return;
+    drag = { mode: 'radius', src: I.src, r0: I.r, d0: I.d, ix: I.x, iy: I.y };
+  } else {
+    hist.begin();
+    I = pick(x, y, P.tool === 'move');
+    if (!I) {
+      if (P.tool === 'move') { hist.commit(); return; }
+      S.lenses.push({ x: r1(x), y: r1(y), r: P.radius, s: DEFAULT_S[P.tool], type: P.tool });
+      I = { src: S.lenses.length - 1, m: MATS.off[0], x, y };
+    }
+    drag = { mode: 'move', src: I.src, m: I.m, ox: I.x - x, oy: I.y - y };
+  }
+  if (drag.mode === 'radius') hist.begin();
+  svg.setPointerCapture(e.pointerId);
+  render();
+});
+svg.addEventListener('pointermove', e => {
+  const [x, y] = at(e);
+  if (!drag) { svg.style.cursor = pick(x, y, P.tool === 'move') ? 'move' : 'crosshair'; return; }
+  const L = S.lenses[drag.src];
+  if (drag.mode === 'move') {
+    const m = drag.m, [sx, sy] = tf([m[0], m[2], m[1], m[3]], x + drag.ox, y + drag.oy);
+    L.x = r1(sx); L.y = r1(sy);
+  } else L.r = r1(clamp(drag.r0 + Math.hypot(x - drag.ix, y - drag.iy) - drag.d0, 12, 700));
+  schedule();
+});
+const endDrag = () => { if (drag) { drag = null; hist.commit(); } };
+svg.addEventListener('pointerup', endDrag);
+svg.addEventListener('pointercancel', endDrag);
+svg.addEventListener('contextmenu', e => { e.preventDefault(); remove(pick(...at(e), true)); });
+// scroll over a lens: radius (⌥: strength); a burst of wheel ticks
+// is one undo step
+let wheelT = 0;
+svg.addEventListener('wheel', e => {
+  const I = pick(...at(e), true);
+  if (!I) return;
+  e.preventDefault();
+  if (!wheelT) hist.begin();
+  const L = S.lenses[I.src], k = Math.exp(-(e.deltaY || e.deltaX) * 0.0015);
+  if (e.altKey) L.s = r1(clamp(L.s * k, 0.05, 1.6) * 100) / 100;
+  else L.r = r1(clamp(L.r * k, 12, 700));
+  schedule();
+  clearTimeout(wheelT);
+  wheelT = setTimeout(() => { wheelT = 0; hist.commit(); }, 300);
+}, { passive: false });
+
+/* ------------------------------ colors --------------------------
+   Ink & Paper — every tool in this playground is two colors: the
+   mark (ink) and the ground (paper). Both live in the URL so a good
+   combo is a bookmarkable link. Presets are shared playground-wide.
+---------------------------------------------------------------- */
+const PRESETS = [
+  { name: 'Print',     paper: '#ffffff', ink: '#000000' },
+  { name: 'Blueprint', paper: '#0b2447', ink: '#a9d6ff' },
+  { name: 'Riso Red',  paper: '#f7f1e1', ink: '#ff4b2e' },
+  { name: 'Terminal',  paper: '#0a0f0a', ink: '#33ff66' },
+  { name: 'Butter',    paper: '#ffd966', ink: '#33200a' },
+  { name: 'Midnight',  paper: '#000000', ink: '#9d5cff' },
+];
+const C = { ink: '#000000', paper: '#ffffff' };
+{
+  const q = new URLSearchParams(location.search);
+  for (const k of ['ink', 'paper'])
+    if (/^[0-9a-fA-F]{6}$/.test(q.get(k) || '')) C[k] = '#' + q.get(k);
+}
+const inkEl = document.getElementById('ink'), paperEl = document.getElementById('paper');
+function setColors(ink, paper) {
+  C.ink = ink; C.paper = paper;
+  inkEl.value = ink; paperEl.value = paper;
+  document.body.style.background = paper;
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('ink', ink.slice(1));
+    url.searchParams.set('paper', paper.slice(1));
+    history.replaceState(null, '', url);
+  } catch {}
+  if (W) render();
+}
+inkEl.addEventListener('input', e => setColors(e.target.value, C.paper));
+paperEl.addEventListener('input', e => setColors(C.ink, e.target.value));
+document.getElementById('swap').onclick = () => setColors(C.paper, C.ink);
+for (const p of PRESETS) {
+  const b = document.createElement('button');
+  b.title = p.name;
+  b.innerHTML = `<span style="background:${p.paper}"></span><span style="background:${p.ink}"></span>`;
+  b.onclick = () => setColors(p.ink, p.paper);
+  document.getElementById('presets').appendChild(b);
+}
+
+/* ---------------------------- controls -------------------------- */
+const symEl = document.getElementById('sym');
+// changing symmetry is an edit (undoable); placed lenses stay
+symEl.addEventListener('input', e => hist.change(() => { S.sym = e.target.value; }));
+for (const k of ['freq', 'angle', 'gain', 'radius', 'smooth'])
+  document.getElementById(k).addEventListener('input', e => { P[k] = +e.target.value; schedule(); });
+const guideEl = document.getElementById('guide');
+guideEl.addEventListener('input', e => { P.guide = e.target.checked; render(); });
+const toolBtns = [...document.querySelectorAll('#tools button')];
+function setTool(t) {
+  P.tool = t;
+  for (const b of toolBtns) b.classList.toggle('on', b.dataset.tool === t);
+}
+for (const b of toolBtns) b.onclick = () => setTool(b.dataset.tool);
+
+// animate: lens strengths breathe on requestAnimationFrame; never
+// under prefers-reduced-motion
+const animEl = document.getElementById('animate');
+const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+let animId = 0;
+function setAnimate(on) {
+  if (on && reduced.matches) { on = false; toast('Animation off — reduced motion is on'); }
+  P.animate = on; animEl.checked = on;
+  cancelAnimationFrame(animId); animId = 0;
+  const tick = () => { render(); animId = requestAnimationFrame(tick); };
+  if (on) animId = requestAnimationFrame(tick); else if (W) render();
+}
+animEl.addEventListener('input', e => setAnimate(e.target.checked));
+animEl.disabled = reduced.matches;
+reduced.addEventListener?.('change', () => { animEl.disabled = reduced.matches; if (reduced.matches) setAnimate(false); });
+
+document.getElementById('undo').onclick = () => hist.undo();
+document.getElementById('redo').onclick = () => hist.redo();
+// shuffle: 2–4 random lenses under a random (non-off) symmetry
+const shuffle = () => hist.change(() => {
+  const types = ['bulge', 'bulge', 'pinch', 'twist'], n = 2 + (Math.random() * 3 | 0);
+  S.sym = SYM_ORDER[1 + (Math.random() * (SYM_ORDER.length - 1) | 0)]; symEl.value = S.sym;
+  const R = Math.min(W, H) / 2;
+  S.lenses = Array.from({ length: n }, (_, i) => {
+    const type = i === 0 ? 'bulge' : types[Math.random() * types.length | 0];
+    return {
+      x: r1((Math.random() * 2 - 1) * R * 0.9), y: r1((Math.random() * 2 - 1) * R * 0.9),
+      r: r1(R * (0.3 + Math.random() * 0.6)), s: r1(DEFAULT_S[type] * (0.6 + Math.random() * 0.6) * 100) / 100, type,
+    };
+  });
+});
+document.getElementById('shuffle').onclick = shuffle;
+document.getElementById('clear').onclick = () => hist.change(() => { S.lenses = []; });
+document.getElementById('collapse').onclick = e => {
+  const p = document.getElementById('panel'), c = p.classList.toggle('collapsed');
+  e.target.textContent = c ? '+' : '–';
+  e.target.setAttribute('aria-expanded', !c);
+};
+wireExport(exportSVG, 'op-art-warp');
+
+/* --------------------------- switcher --------------------------- */
+const VARIANTS = [
+  { key: 'A', name: 'Stripes' },
+  { key: 'B', name: 'Checker' },
+  { key: 'C', name: 'Rings' },
+];
+let current = Math.max(0, VARIANTS.findIndex(v =>
+  v.key === new URLSearchParams(location.search).get('variant')));
+
+function setVariant(i) {
+  current = (i + VARIANTS.length) % VARIANTS.length;
+  const v = VARIANTS[current];
+  document.getElementById('label').textContent = `${v.key} — ${v.name}`;
+  document.getElementById('variant-title').textContent = v.name;
+  document.getElementById('angle-wrap').hidden = v.key !== 'A';
+  document.getElementById('freq-label').firstChild.textContent = v.key === 'B' ? 'Cell size ' : v.key === 'C' ? 'Ring width ' : 'Band size ';
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('variant', v.key);
+    history.replaceState(null, '', url);
+  } catch {}
+  render();
+}
+document.getElementById('prev').onclick = () => setVariant(current - 1);
+document.getElementById('next').onclick = () => setVariant(current + 1);
+const TOOL_KEYS = { 1: 'bulge', 2: 'pinch', 3: 'twist', 4: 'move', b: 'bulge', p: 'pinch', t: 'twist', v: 'move' };
+window.addEventListener('keydown', e => {
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? hist.redo() : hist.undo(); return; }
+  if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); hist.redo(); return; }
+  if (mod) return;
+  const k = e.key.toLowerCase();
+  if (e.key === 'ArrowLeft') setVariant(current - 1);
+  else if (e.key === 'ArrowRight') setVariant(current + 1);
+  else if (TOOL_KEYS[k]) setTool(TOOL_KEYS[k]);
+  else if (k === 'm') hist.change(() => { S.sym = SYM_ORDER[(SYM_ORDER.indexOf(S.sym) + 1) % SYM_ORDER.length]; symEl.value = S.sym; });
+  else if (k === 'h') { P.guide = !P.guide; guideEl.checked = P.guide; render(); }
+  else if (k === 'a') setAnimate(!P.animate);
+  else if (k === 'r') shuffle();
+});
+
+function resize() {
+  W = window.innerWidth; H = window.innerHeight;
+  cx = Math.round(W / 2); cy = Math.round(H / 2);
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  render();
+}
+window.addEventListener('resize', resize);
+
+// first visit: a central bulge ringed by four quad-mirrored pinches
+let saved = null;
+try { saved = localStorage.getItem('op-art-warp'); } catch {}
+try { if (saved) restore(saved); } catch {}
+if (!saved) S.lenses = [
+  { x: 0, y: 0, r: 250, s: 0.9, type: 'bulge' },
+  { x: 240, y: 170, r: 150, s: 0.7, type: 'pinch' },
+];
+symEl.value = S.sym;
+setTool(P.tool);
+setColors(C.ink, C.paper);
+resize();
+setVariant(current);
+</script>
+</body>
+</html>

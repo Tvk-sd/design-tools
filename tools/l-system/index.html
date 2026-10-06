@@ -1,0 +1,802 @@
+<!doctype html>
+<!--
+  L-System Garden — tool #9 of the Design Tools playground (mark family).
+  Grammar rules grow plants and fractals: click to plant a seed, drag to
+  aim it and set its size. Symmetry mirrors every plant (mirrored copies
+  also mirror their turns). Three rule families via ?variant=: A plants
+  (stochastic bracketed weeds & ferns), B fractals (Koch, dragon, Hilbert,
+  Sierpinski, Gosper), C coral (branches taper with depth). Type your own
+  rules under "Edit rules". Export SVG / PNG or copy SVG into Figma.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>L-System Garden</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #000; overflow: hidden; font-family: ui-sans-serif, system-ui, sans-serif; color-scheme: dark; }
+  #stage { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+
+  /* control panel */
+  #panel {
+    position: fixed; top: 16px; left: 16px; z-index: 10;
+    background: rgba(20,20,20,.85); color: #eee; padding: 14px 16px;
+    border-radius: 10px; font-size: 12px; width: 232px;
+    backdrop-filter: blur(6px);
+    max-height: calc(100% - 100px); overflow-y: auto;
+  }
+  #panel .head { display: flex; justify-content: space-between; align-items: center; }
+  #panel .head button { margin: 0; width: 24px; height: 20px; padding: 0; }
+  #panel.collapsed .body { display: none; }
+  #panel label { display: block; margin-top: 10px; color: #999; }
+  #panel input[type=range] { width: 100%; }
+  #panel select {
+    width: 100%; margin-top: 4px; padding: 4px; border-radius: 6px;
+    border: 1px solid #444; background: #111; color: #eee; font-size: 12px;
+  }
+  #panel .check { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: #999; }
+  #panel .check input { margin: 0; }
+  #panel button {
+    margin-top: 12px; width: 100%; padding: 6px; border-radius: 6px;
+    border: 1px solid #444; background: #111; color: #eee; font-size: 12px; cursor: pointer;
+  }
+  #panel button:focus-visible, #panel select:focus-visible, #panel input:focus-visible,
+  #panel textarea:focus-visible, #panel summary:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+  #panel .row { display: flex; gap: 6px; }
+  #panel .row button { flex: 1; margin-top: 8px; }
+  #panel .hint { margin-top: 10px; color: #666; line-height: 1.5; }
+  #panel kbd { font: inherit; color: #999; }
+  #panel [hidden] { display: none; }
+  #panel .note { margin-top: 4px; color: #c9a227; line-height: 1.4; }
+
+  /* rule editor — a disclosure so the panel stays short */
+  #panel details { margin-top: 12px; border-top: 1px solid #333; padding-top: 8px; }
+  #panel summary { cursor: pointer; color: #bbb; }
+  #panel input[type=text], #panel input[type=number], #panel textarea {
+    width: 100%; margin-top: 4px; padding: 4px 6px; border-radius: 6px;
+    border: 1px solid #444; background: #111; color: #eee;
+    font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  #panel textarea { height: 84px; resize: vertical; white-space: pre; }
+  #panel .err { margin-top: 6px; color: #ff6b5a; line-height: 1.4; }
+  #panel .err:empty { display: none; }
+
+  /* ink & paper — shared color block, identical across tools
+     (overrides the generic #panel button rule above) */
+  #panel .swatches { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+  #panel .swatches input[type=color] {
+    flex: 1; height: 26px; padding: 1px; border: 1px solid #444;
+    border-radius: 6px; background: #111; cursor: pointer;
+  }
+  #panel .swatches button {
+    margin-top: 0; width: 30px; height: 26px; padding: 0;
+    border: 1px solid #444; background: #111; color: #eee;
+    border-radius: 6px; cursor: pointer;
+  }
+  #panel .presets { display: flex; gap: 5px; margin-top: 8px; }
+  #panel .presets button {
+    flex: 1; margin-top: 0; width: auto; height: 16px; padding: 0;
+    border: 1px solid #444; border-radius: 4px;
+    overflow: hidden; display: flex; cursor: pointer; background: none;
+  }
+  #panel .presets span { flex: 1; }
+
+  /* prototype switcher — deliberately NOT styled like the design being judged */
+  #switcher {
+    position: fixed; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%); z-index: 10;
+    display: flex; align-items: center; gap: 12px;
+    background: #fff; color: #000; border-radius: 999px; padding: 8px 16px;
+    font-size: 13px; font-weight: 600; box-shadow: 0 4px 20px rgba(0,0,0,.5);
+    user-select: none;
+  }
+  #switcher button { border: 0; background: none; color: #000; font-size: 16px; cursor: pointer; padding: 2px 6px; }
+  #switcher span { min-width: 140px; text-align: center; }
+
+  /* mark kit toast — shared across mark tools */
+  #toast {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 20;
+    background: #fff; color: #000; padding: 8px 14px; border-radius: 999px;
+    font-size: 13px; font-weight: 600; opacity: 0; transition: opacity .2s; pointer-events: none;
+  }
+  #toast.on { opacity: 1; }
+
+  @media (max-width: 600px) {
+    #panel { width: auto; right: 16px; max-height: 50%; }
+    #switcher span { min-width: 90px; }
+  }
+  @media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
+</style>
+</head>
+<body>
+<svg id="stage" xmlns="http://www.w3.org/2000/svg" aria-label="Garden canvas"></svg>
+
+<div id="panel">
+  <div class="head">
+    <strong id="variant-title"></strong>
+    <button id="collapse" title="Hide panel" aria-expanded="true">–</button>
+  </div>
+  <div class="body">
+    <label id="fractal-wrap">Curve
+      <select id="fractal">
+        <option value="koch">Koch snowflake</option>
+        <option value="dragon">Dragon curve</option>
+        <option value="hilbert">Hilbert curve</option>
+        <option value="sierpinski">Sierpinski arrowhead</option>
+        <option value="gosper">Gosper curve</option>
+        <option value="custom" disabled>Custom rules</option>
+      </select>
+    </label>
+    <label>Symmetry
+      <select id="sym">
+        <option value="off">Off</option>
+        <option value="x">Mirror ↔</option>
+        <option value="y">Mirror ↕</option>
+        <option value="quad">Quad</option>
+        <option value="kaleido">Kaleido (8)</option>
+      </select>
+    </label>
+    <label>Iterations <input type="range" id="iter" min="0" max="14" step="1" value="5" /></label>
+    <div class="note" id="cap-note" hidden></div>
+    <label>Turn angle <input type="range" id="angle" min="1" max="180" step="0.5" value="25" /></label>
+    <label>Length <input type="range" id="len" min="0.3" max="2.5" step="0.01" value="1" /></label>
+    <label id="jitter-wrap">Angle jitter <input type="range" id="jitter" min="0" max="30" step="0.5" value="6" /></label>
+    <label>Line weight <input type="range" id="weight" min="0.3" max="6" step="0.1" value="1.2" /></label>
+    <label class="check"><input type="checkbox" id="guide" /> Show seeds &amp; headings</label>
+    <label>Colors — ink ⇄ paper</label>
+    <div class="swatches">
+      <input type="color" id="ink" value="#000000" title="Ink" />
+      <button id="swap" title="Swap ink and paper">⇄</button>
+      <input type="color" id="paper" value="#ffffff" title="Paper" />
+    </div>
+    <div class="presets" id="presets"></div>
+    <details id="editor">
+      <summary>Edit rules</summary>
+      <label>Axiom <input type="text" id="axiom" spellcheck="false" autocomplete="off" /></label>
+      <label>Angle (°) <input type="number" id="angle-num" min="0" max="360" step="0.5" /></label>
+      <label>Rules — one per line, <kbd>a | b</kbd> = random pick
+        <textarea id="rules" spellcheck="false"></textarea>
+      </label>
+      <div class="err" id="rule-err" role="alert"></div>
+      <div class="hint">
+        <kbd>F G</kbd> draw · <kbd>f</kbd> move · <kbd>+ -</kbd> turn ·
+        <kbd>[ ]</kbd> branch · other letters only rewrite
+      </div>
+      <button id="reset-rules" title="Restore this variant's preset">Reset to preset</button>
+    </details>
+    <div class="row">
+      <button id="undo" title="Undo (⌘Z)">Undo</button>
+      <button id="redo" title="Redo (⇧⌘Z)">Redo</button>
+    </div>
+    <div class="row">
+      <button id="shuffle" title="Plant a random garden (R)">Shuffle</button>
+      <button id="clear" title="Remove every plant">Clear</button>
+    </div>
+    <button id="grow" title="Animate the garden growing (G)">Grow</button>
+    <div class="row">
+      <button id="svg-out">SVG</button>
+      <button id="png-out">PNG</button>
+      <button id="copy-out" title="Copy SVG markup, then paste into Figma">Copy</button>
+    </div>
+    <label class="check"><input type="checkbox" id="bg-out" /> Include paper in export</label>
+    <div class="hint">
+      click to plant · drag to aim &amp; size · <kbd>M</kbd> symmetry ·
+      <kbd>H</kbd> guide · <kbd>G</kbd> grow · <kbd>R</kbd> shuffle ·
+      <kbd>⌘Z</kbd> undo · export = art bounds
+    </div>
+  </div>
+</div>
+
+<div id="switcher">
+  <button id="prev" aria-label="Previous variant">←</button><span id="label"></span><button id="next" aria-label="Next variant">→</button>
+</div>
+<div id="toast" role="status"></div>
+
+<script>
+/* ================================================================
+   MARK KIT — shared block, copied verbatim across the mark tools
+   (dot-bridge, truchet, contour-rings, l-system, op-art-warp).
+   Symmetry matrices, undo history, toast, and SVG / PNG / clipboard
+   export wired to #svg-out, #png-out, #copy-out and #bg-out.
+   Edit it in one tool, then paste the same block into the others.
+================================================================ */
+const NS = 'http://www.w3.org/2000/svg';
+/* symmetry as 2×2 integer matrices [a,b,c,d]: (x,y) → (ax+by, cx+dy) */
+const MATS = {
+  off:  [[1,0,0,1]],
+  x:    [[1,0,0,1], [-1,0,0,1]],
+  y:    [[1,0,0,1], [1,0,0,-1]],
+  quad: [[1,0,0,1], [-1,0,0,1], [1,0,0,-1], [-1,0,0,-1]],
+  kaleido: [[1,0,0,1], [-1,0,0,1], [1,0,0,-1], [-1,0,0,-1],
+            [0,1,1,0], [0,-1,1,0], [0,1,-1,0], [0,-1,-1,0]],
+};
+const SYM_ORDER = Object.keys(MATS);
+const tf = (m, x, y) => [m[0] * x + m[1] * y, m[2] * x + m[3] * y];
+/* does m swap the two diagonals of a square? (mirror-like maps do) */
+const flipsDiagonal = m => { const [p, q] = tf(m, 1, 1); return p * q < 0; };
+const f2 = n => +n.toFixed(2);
+
+/* undo history over string snapshots; onChange(snapshot) after every edit */
+function History(snapshot, restore, onChange) {
+  const u = [], r = [];
+  let before = null;
+  return {
+    begin() { before = snapshot(); },
+    commit() {
+      const now = snapshot();
+      if (before !== null && now !== before) {
+        u.push(before); if (u.length > 200) u.shift();
+        r.length = 0;
+      }
+      before = null; onChange(now);
+    },
+    change(fn) { this.begin(); fn(); this.commit(); },
+    undo() { if (!u.length) return; r.push(snapshot()); restore(u.pop()); onChange(snapshot()); },
+    redo() { if (!r.length) return; u.push(snapshot()); restore(r.pop()); onChange(snapshot()); },
+    get canUndo() { return u.length > 0; },
+    get canRedo() { return r.length > 0; },
+  };
+}
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('on');
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('on'), 1800);
+}
+function download(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+/* getSVG(includePaper) → standalone SVG string, or null when empty */
+function wireExport(getSVG, name) {
+  const bg = () => !!document.getElementById('bg-out')?.checked;
+  const need = () => { const s = getSVG(bg()); if (!s) toast('Nothing to export yet'); return s; };
+  document.getElementById('svg-out').onclick = () => {
+    const s = need(); if (s) download(new Blob([s], { type: 'image/svg+xml' }), name + '.svg');
+  };
+  document.getElementById('png-out').onclick = () => {
+    const s = need(); if (!s) return;
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas'), k = 3;
+      c.width = img.width * k; c.height = img.height * k;
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob(b => download(b, name + '.png'));
+    };
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s);
+  };
+  document.getElementById('copy-out').onclick = () => {
+    const s = need(); if (!s) return;
+    navigator.clipboard.writeText(s)
+      .then(() => toast('SVG copied — paste into Figma'))
+      .catch(() => toast('Clipboard blocked — use the SVG button'));
+  };
+}
+/* ======================== end MARK KIT ======================== */
+
+const svg = document.getElementById('stage');
+let W, H, cx, cy;
+const f1 = n => Math.round(n * 10) / 10;
+const CAP = 60000;               // max drawn segments across the whole garden
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* ---------------------------- presets ---------------------------
+   A rule set is { axiom, rules, angle, iter }. Rules are text, one
+   production per line ("X -> a | b | c"); alternatives (or repeated
+   predecessors) are picked at random per symbol with the plant's seed.
+---------------------------------------------------------------- */
+const PLANTS = {
+  axiom: 'X', angle: 25, iter: 5,
+  rules: 'X -> F[+X]F[-X]+X | F[+X][-X]FX | F-[[X]+X]+F[+FX]-X\nF -> FF',
+};
+const FRACTALS = {
+  koch:       { axiom: 'F--F--F', angle: 60, iter: 4, rules: 'F -> F+F--F+F' },
+  dragon:     { axiom: 'FX',      angle: 90, iter: 12, rules: 'X -> X+YF+\nY -> -FX-Y' },
+  hilbert:    { axiom: 'X',       angle: 90, iter: 5, rules: 'X -> +YF-XFX-FY+\nY -> -XF+YFY+FX-' },
+  sierpinski: { axiom: 'F',       angle: 60, iter: 7, rules: 'F -> G-F-G\nG -> F+G+F' },
+  gosper:     { axiom: 'F',       angle: 60, iter: 4, rules: 'F -> F-G--G+F++FF+G-\nG -> +F-GG--G-F++F+G' },
+};
+const CORAL = {
+  axiom: 'X', angle: 28, iter: 7,
+  rules: 'X -> F[+X]F[-X] | F[-X]F[+X] | F[+X][-X]',
+};
+const presetFor = (key, fr) => ({ ...(key === 'A' ? PLANTS : key === 'C' ? CORAL : FRACTALS[fr || 'koch']) });
+
+/* ------------------------------ state ---------------------------
+   A plant is { x, y (px from canvas center), a (heading, degrees),
+   s (reach in px), seed }. Symmetry is applied at render time, so
+   changing it re-mirrors the whole garden. Rules live per variant.
+---------------------------------------------------------------- */
+const S = { sym: 'off', plants: [] };
+const P = { len: 1, jitter: 6, weight: 1.2, guide: false };
+const RULES = { A: presetFor('A'), B: { ...presetFor('B'), preset: 'koch' }, C: presetFor('C') };
+let gram = null;                 // compiled rules of the current variant
+let growT = 1;                   // 0..1 — how much of each plant is drawn
+
+function rand(seed) {            // mulberry32
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* ---------------------------- grammar ---------------------------
+   compile() throws a readable message; the editor shows it inline
+   and the garden keeps drawing with the last rules that worked.
+---------------------------------------------------------------- */
+const draws = s => { let n = 0; for (const ch of s) if (ch === 'F' || ch === 'G') n++; return n; };
+function balanced(s, where) {
+  let d = 0;
+  for (const ch of s) { if (ch === '[') d++; else if (ch === ']' && --d < 0) break; }
+  if (d !== 0) throw `${where}: unbalanced [ ]`;
+}
+function compile(r) {
+  const axiom = String(r.axiom || '').replace(/\s+/g, '');
+  if (!axiom) throw 'Axiom is empty';
+  balanced(axiom, 'Axiom');
+  const angle = +r.angle;
+  if (r.angle === '' || !isFinite(angle)) throw 'Angle must be a number';
+  const prods = {};
+  String(r.rules || '').split('\n').forEach((line, i) => {
+    const s = line.replace(/#.*/, '').trim();
+    if (!s) return;
+    const m = s.match(/^(\S)\s*(?:->|→|=|:)\s*(.*)$/);
+    if (!m) throw `Line ${i + 1}: write it as  X -> successor`;
+    const alts = m[2].split('|').map(a => a.replace(/\s+/g, ''));
+    alts.forEach(a => balanced(a, `Line ${i + 1}`));
+    (prods[m[1]] ||= []).push(...alts.map(a => ({ s: a, n: draws(a) })));
+  });
+  const det = Object.values(prods).every(a => a.length === 1);
+  return { axiom, prods, angle, iter: Math.max(0, Math.min(14, r.iter | 0)), det };
+}
+
+/* expansions per seed, one string per level; growth stops at CAP */
+const EXP = new Map(), GEO = new Map();
+function levelString(seed, n) {
+  let e = EXP.get(seed);
+  if (!e) { e = { s: [gram.axiom], c: [draws(gram.axiom)], rnd: rand(seed), stop: false }; EXP.set(seed, e); }
+  while (e.s.length <= n && !e.stop) {
+    const prev = e.s[e.s.length - 1], out = [];
+    let cnt = 0, len = 0;
+    for (const ch of prev) {
+      const alts = gram.prods[ch];
+      if (!alts) { out.push(ch); len++; if (ch === 'F' || ch === 'G') cnt++; continue; }
+      const p = alts.length > 1 ? alts[(e.rnd() * alts.length) | 0] : alts[0];
+      out.push(p.s); cnt += p.n; len += p.s.length;
+      if (cnt > CAP || len > 2e6) { e.stop = true; break; }
+    }
+    if (e.stop) break;
+    e.s.push(out.join('')); e.c.push(cnt);
+  }
+  return n < e.s.length ? e.s[n] : null;
+}
+const segsAt = (seed, n) => levelString(seed, n) === null ? Infinity : EXP.get(seed).c[n];
+
+/* highest level ≤ the slider whose whole garden fits under CAP */
+function level() {
+  const want = gram.iter, ek = p => gram.det ? 0 : p.seed;
+  const copies = S.plants.map(p => copiesOf(p).length);
+  for (let n = want; n > 0; n--) {
+    let tot = 0;
+    for (let i = 0; i < S.plants.length && tot <= CAP; i++) tot += segsAt(ek(S.plants[i]), n) * copies[i];
+    if (tot <= CAP) return { n, capped: n < want };
+  }
+  return { n: 0, capped: want > 0 };
+}
+
+/* -------------------------- turtle → lines -----------------------
+   Interprets a level string in local space (start at 0,0 heading +x),
+   merges straight runs of F into single points, and records for every
+   point its distance from the root along the branch (t) — Grow reveals
+   points with t below a threshold, so all branches grow at once.
+   Lines are normalized so the plant's reach is 1.
+---------------------------------------------------------------- */
+function geom(seed, n) {
+  const jit = VARIANTS[current].key === 'B' ? 0 : P.jitter;
+  const ek = gram.det ? 0 : seed;
+  const key = (gram.det && !jit ? 0 : seed) + '|' + n + '|' + gram.angle + '|' + jit;
+  if (GEO.has(key)) return GEO.get(key);
+  const str = levelString(ek, n) || '';
+  const rnd = rand(seed ^ 0x9e3779b9), A = gram.angle * Math.PI / 180, J = jit * Math.PI / 180;
+  const turn = () => A + (J ? (rnd() * 2 - 1) * J : 0);
+  let x = 0, y = 0, a = 0, t = 0, dep = 0, cur = null, turned = true, R = 0, T = 0;
+  const st = [], lines = [];
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (ch === 'F' || ch === 'G') {
+      if (!cur) { cur = { d: dep, p: [x, y], t: [t] }; lines.push(cur); }
+      else if (!turned && cur.t.length > 1) { cur.p.length -= 2; cur.t.length -= 1; }
+      x += Math.cos(a); y += Math.sin(a); t++;
+      cur.p.push(x, y); cur.t.push(t);
+      turned = false;
+      R = Math.max(R, x * x + y * y); T = Math.max(T, t);
+    } else if (ch === 'f') { x += Math.cos(a); y += Math.sin(a); t++; cur = null; }
+    else if (ch === '+') { a += turn(); turned = true; }
+    else if (ch === '-') { a -= turn(); turned = true; }
+    else if (ch === '[') { st.push([x, y, a, t, dep]); dep++; cur = null; }
+    else if (ch === ']' && st.length) { [x, y, a, t, dep] = st.pop(); cur = null; }
+  }
+  const k = R ? 1 / Math.sqrt(R) : 1;
+  for (const L of lines) for (let i = 0; i < L.p.length; i++) L.p[i] *= k;
+  const g = { lines, T: T || 1 };
+  if (GEO.size > 300) GEO.clear();
+  GEO.set(key, g);
+  return g;
+}
+
+/* each symmetry image of a plant: position, unit heading, mirrored? */
+function copiesOf(p) {
+  const r = p.a * Math.PI / 180, out = [], seen = new Set();
+  for (const m of MATS[S.sym]) {
+    const [x, y] = tf(m, p.x, p.y), [hx, hy] = tf(m, Math.cos(r), Math.sin(r));
+    const mir = m[0] * m[3] - m[1] * m[2] < 0;
+    const k = [f1(x), f1(y), f2(hx), f2(hy), mir].join();
+    if (!seen.has(k)) { seen.add(k); out.push({ x, y, hx, hy, mir }); }
+  }
+  return out;
+}
+
+/* ---------------------------- art -------------------------------
+   One <path> per stroke width: A/B share one, C gets one per
+   (plant, depth) so branches taper. Coordinates are offset by
+   (ox, oy) so export can crop to the art's bounding box.
+---------------------------------------------------------------- */
+function buildArt(ox, oy, grow = 1) {
+  const V = VARIANTS[current].key, lv = level(), groups = new Map();
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, maxW = P.weight;
+  S.plants.forEach((p, pi) => {
+    const G = geom(p.seed, lv.n), T = grow * G.T, k = p.s * P.len;
+    const taper = P.weight * 4.5 * Math.sqrt(Math.max(k, 20) / 240);
+    for (const c of copiesOf(p)) {
+      const X0 = cx + c.x - ox, Y0 = cy + c.y - oy, my = c.mir ? -1 : 1;
+      for (const L of G.lines) {
+        if (L.t[0] >= T) continue;
+        let d = '';
+        for (let i = 0; i < L.t.length; i++) {
+          let lx = L.p[2 * i], ly = L.p[2 * i + 1];
+          const over = L.t[i] > T;
+          if (over) { // cut the last segment where growth currently ends
+            const f = (T - L.t[i - 1]) / (L.t[i] - L.t[i - 1]), px = L.p[2 * i - 2], py = L.p[2 * i - 1];
+            lx = px + (lx - px) * f; ly = py + (ly - py) * f;
+          }
+          ly *= my;
+          const X = f1(X0 + k * (c.hx * lx - c.hy * ly)), Y = f1(Y0 + k * (c.hy * lx + c.hx * ly));
+          d += (i ? ' ' : 'M') + X + ' ' + Y;
+          if (X < x0) x0 = X; if (X > x1) x1 = X; if (Y < y0) y0 = Y; if (Y > y1) y1 = Y;
+          if (over) break;
+        }
+        const gk = V === 'C' ? pi + '|' + L.d : '';
+        if (!groups.has(gk)) groups.set(gk, { d: '', w: V === 'C' ? Math.max(0.8, taper * Math.pow(0.8, L.d)) : P.weight });
+        groups.get(gk).d += d;
+      }
+    }
+  });
+  let html = '';
+  const att = `fill="none" stroke="${C.ink}" stroke-linecap="round" stroke-linejoin="round"`;
+  if (V === 'C') {
+    // thick trunks first so thinner twigs sit on top of them
+    for (const g of [...groups.values()].sort((a, b) => b.w - a.w)) {
+      html += `<path ${att} stroke-width="${f2(g.w)}" d="${g.d}"/>`;
+      maxW = Math.max(maxW, g.w);
+    }
+  } else if (groups.has('')) html = `<path ${att} stroke-width="${P.weight}" d="${groups.get('').d}"/>`;
+  return { html, lv, maxW, box: x0 <= x1 ? [x0, y0, x1, y1] : null };
+}
+
+function render() {
+  let html = `<rect width="${W}" height="${H}" fill="${C.paper}"/>`;
+  const art = buildArt(0, 0, growT);
+  html += art.html;
+  if (P.guide) {
+    const st = `stroke="#fff" stroke-width="1.5" style="mix-blend-mode:difference"`;
+    let g = '', dots = '';
+    for (const p of S.plants) for (const c of copiesOf(p)) {
+      const x = cx + c.x, y = cy + c.y, k = p.s * P.len;
+      g += `M${f1(x)} ${f1(y)}L${f1(x + c.hx * k)} ${f1(y + c.hy * k)}`;
+      dots += `<circle cx="${f1(x)}" cy="${f1(y)}" r="4" fill="#fff" style="mix-blend-mode:difference"/>`;
+    }
+    if (g) html += `<path d="${g}" fill="none" ${st} stroke-dasharray="4 5"/>` + dots;
+    const ax = `stroke="#fff" stroke-width="1.5" stroke-dasharray="6 6" style="mix-blend-mode:difference"`;
+    if (['x', 'quad', 'kaleido'].includes(S.sym)) html += `<line x1="${cx}" y1="0" x2="${cx}" y2="${H}" ${ax}/>`;
+    if (['y', 'quad', 'kaleido'].includes(S.sym)) html += `<line x1="0" y1="${cy}" x2="${W}" y2="${cy}" ${ax}/>`;
+    if (S.sym === 'kaleido') html += `<path d="M${cx - H} ${cy - H}L${cx + H} ${cy + H}M${cx + H} ${cy - H}L${cx - H} ${cy + H}" ${ax}/>`;
+  }
+  svg.innerHTML = html;
+  const note = document.getElementById('cap-note');
+  note.hidden = !art.lv.capped;
+  note.textContent = `Capped at ${CAP / 1000}k segments — drawing ${art.lv.n} of ${gram.iter} iterations`;
+  document.getElementById('undo').disabled = !hist.canUndo;
+  document.getElementById('redo').disabled = !hist.canRedo;
+}
+let queued = false;
+const requestRender = () => { if (!queued) { queued = true; requestAnimationFrame(() => { queued = false; render(); }); } };
+
+function exportSVG(withPaper) {
+  const probe = buildArt(0, 0, 1);
+  if (!probe.box) return null;
+  const pad = Math.ceil(probe.maxW / 2 + 16), [a, b, c, d] = probe.box;
+  const ox = Math.floor(a - pad), oy = Math.floor(b - pad);
+  const w = Math.ceil(c + pad) - ox, h = Math.ceil(d + pad) - oy;
+  return `<svg xmlns="${NS}" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
+    (withPaper ? `<rect width="${w}" height="${h}" fill="${C.paper}"/>` : '') +
+    buildArt(ox, oy, 1).html + `</svg>`;
+}
+
+/* grow the garden on over ~1.5s; reduced motion just shows it */
+function grow() {
+  if (reduceMotion) { growT = 1; render(); return; }
+  const t0 = performance.now();
+  cancelAnimationFrame(grow.h);
+  const step = now => {
+    const u = Math.min(1, (now - t0) / 1500);
+    growT = 1 - Math.pow(1 - u, 2);
+    render();
+    if (u < 1) grow.h = requestAnimationFrame(step);
+  };
+  grow.h = requestAnimationFrame(step);
+}
+
+/* ------------------------- undo / storage ---------------------- */
+const serialize = () => JSON.stringify({ sym: S.sym, p: S.plants });
+function restore(str) {
+  const d = JSON.parse(str);
+  S.sym = MATS[d.sym] ? d.sym : 'off';
+  S.plants = Array.isArray(d.p) ? d.p.filter(p => p && isFinite(p.x) && isFinite(p.y) && isFinite(p.a) && isFinite(p.s)) : [];
+  symEl.value = S.sym;
+}
+const hist = History(serialize, restore, snap => {
+  try { localStorage.setItem('l-system', snap); } catch {}
+  if (W) render();
+});
+// rules and sliders are settings, not edits — saved, but not undoable
+function savePrefs() {
+  try { localStorage.setItem('l-system-prefs', JSON.stringify({ P: { ...P, guide: false }, RULES })); } catch {}
+}
+
+/* ----------------------------- input ----------------------------
+   Pointer down plants a seed heading up at a default size; dragging
+   aims it along the drag vector, and its length becomes the reach.
+---------------------------------------------------------------- */
+let planting = null, start = null;
+const defaultReach = () => Math.round(Math.min(W, H) * 0.28);
+function local(e) {
+  const r = svg.getBoundingClientRect();
+  return [e.clientX - r.left - cx, e.clientY - r.top - cy];
+}
+svg.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  svg.setPointerCapture(e.pointerId);
+  hist.begin();
+  start = local(e);
+  const V = VARIANTS[current].key;
+  planting = { x: f1(start[0]), y: f1(start[1]), a: V === 'B' ? 0 : -90, s: defaultReach(), seed: (Math.random() * 1e9) | 0 };
+  S.plants.push(planting);
+  growT = 1; cancelAnimationFrame(grow.h);
+  render();
+});
+svg.addEventListener('pointermove', e => {
+  if (!planting) return;
+  const [x, y] = local(e), dx = x - start[0], dy = y - start[1], len = Math.hypot(dx, dy);
+  if (len < 8) return;
+  planting.a = f1(Math.atan2(dy, dx) * 180 / Math.PI);
+  planting.s = Math.round(len);
+  requestRender();
+});
+const endPlant = () => { if (planting) { planting = null; hist.commit(); } };
+svg.addEventListener('pointerup', endPlant);
+svg.addEventListener('pointercancel', endPlant);
+
+/* ------------------------------ colors --------------------------
+   Ink & Paper — every tool in this playground is two colors: the
+   mark (ink) and the ground (paper). Both live in the URL so a good
+   combo is a bookmarkable link. Presets are shared playground-wide.
+---------------------------------------------------------------- */
+const PRESETS = [
+  { name: 'Print',     paper: '#ffffff', ink: '#000000' },
+  { name: 'Blueprint', paper: '#0b2447', ink: '#a9d6ff' },
+  { name: 'Riso Red',  paper: '#f7f1e1', ink: '#ff4b2e' },
+  { name: 'Terminal',  paper: '#0a0f0a', ink: '#33ff66' },
+  { name: 'Butter',    paper: '#ffd966', ink: '#33200a' },
+  { name: 'Midnight',  paper: '#000000', ink: '#9d5cff' },
+];
+const C = { ink: '#33ff66', paper: '#0a0f0a' };
+{
+  const q = new URLSearchParams(location.search);
+  for (const k of ['ink', 'paper'])
+    if (/^[0-9a-fA-F]{6}$/.test(q.get(k) || '')) C[k] = '#' + q.get(k);
+}
+const inkEl = document.getElementById('ink'), paperEl = document.getElementById('paper');
+function setColors(ink, paper) {
+  C.ink = ink; C.paper = paper;
+  inkEl.value = ink; paperEl.value = paper;
+  document.body.style.background = paper;
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('ink', ink.slice(1));
+    url.searchParams.set('paper', paper.slice(1));
+    history.replaceState(null, '', url);
+  } catch {}
+  if (W) render();
+}
+inkEl.addEventListener('input', e => setColors(e.target.value, C.paper));
+paperEl.addEventListener('input', e => setColors(C.ink, e.target.value));
+document.getElementById('swap').onclick = () => setColors(C.paper, C.ink);
+for (const p of PRESETS) {
+  const b = document.createElement('button');
+  b.title = p.name;
+  b.innerHTML = `<span style="background:${p.paper}"></span><span style="background:${p.ink}"></span>`;
+  b.onclick = () => setColors(p.ink, p.paper);
+  document.getElementById('presets').appendChild(b);
+}
+
+/* ------------------------- rule editor --------------------------
+   Every keystroke recompiles; on error the message shows inline and
+   the last good grammar keeps rendering.
+---------------------------------------------------------------- */
+const axiomEl = document.getElementById('axiom'), rulesEl = document.getElementById('rules');
+const angleNumEl = document.getElementById('angle-num'), errEl = document.getElementById('rule-err');
+const iterEl = document.getElementById('iter'), angleEl = document.getElementById('angle');
+const fractalEl = document.getElementById('fractal');
+const ruleset = () => RULES[VARIANTS[current].key];
+function applyRules() {
+  const r = ruleset();
+  try { gram = compile(r); errEl.textContent = ''; }
+  catch (msg) { errEl.textContent = String(msg); if (gram) return; gram = compile(presetFor(VARIANTS[current].key)); }
+  EXP.clear(); GEO.clear();
+}
+function fillEditor() {
+  const r = ruleset();
+  axiomEl.value = r.axiom; rulesEl.value = r.rules; angleNumEl.value = r.angle;
+  angleEl.value = r.angle; iterEl.value = r.iter;
+  fractalEl.value = r.preset || 'koch';
+}
+function editRules() {
+  const r = ruleset();
+  r.axiom = axiomEl.value; r.rules = rulesEl.value; r.angle = angleNumEl.value;
+  if (VARIANTS[current].key === 'B') { r.preset = 'custom'; fractalEl.value = 'custom'; }
+  if (isFinite(+r.angle) && r.angle !== '') angleEl.value = r.angle;
+  const before = gram;
+  applyRules();
+  if (gram !== before || !errEl.textContent) { savePrefs(); render(); }
+}
+for (const el of [axiomEl, rulesEl, angleNumEl]) el.addEventListener('input', editRules);
+document.getElementById('reset-rules').onclick = () => {
+  const V = VARIANTS[current].key;
+  RULES[V] = V === 'B' ? { ...presetFor('B', fractalEl.value === 'custom' ? 'koch' : fractalEl.value), preset: fractalEl.value === 'custom' ? 'koch' : fractalEl.value } : presetFor(V);
+  fillEditor(); applyRules(); savePrefs(); render();
+};
+fractalEl.addEventListener('input', e => {
+  RULES.B = { ...presetFor('B', e.target.value), preset: e.target.value };
+  fillEditor(); applyRules(); savePrefs(); render();
+});
+
+/* ---------------------------- controls -------------------------- */
+const symEl = document.getElementById('sym');
+symEl.addEventListener('input', e => hist.change(() => { S.sym = e.target.value; }));
+iterEl.addEventListener('input', e => { ruleset().iter = +e.target.value; gram.iter = +e.target.value; savePrefs(); render(); });
+angleEl.addEventListener('input', e => {
+  ruleset().angle = +e.target.value; angleNumEl.value = e.target.value;
+  if (!errEl.textContent) { gram.angle = +e.target.value; GEO.clear(); }
+  savePrefs(); render();
+});
+for (const k of ['len', 'jitter', 'weight'])
+  document.getElementById(k).addEventListener('input', e => { P[k] = +e.target.value; if (k === 'jitter') GEO.clear(); savePrefs(); render(); });
+const guideEl = document.getElementById('guide');
+guideEl.addEventListener('input', e => { P.guide = e.target.checked; render(); });
+document.getElementById('undo').onclick = () => hist.undo();
+document.getElementById('redo').onclick = () => hist.redo();
+
+// a random garden of 3–7 plants; plant families lean upward, curves spin freely
+function randomPlants(n) {
+  const V = VARIANTS[current].key, m = Math.min(W, H), out = [];
+  for (let i = 0; i < n; i++) {
+    const up = V !== 'B';
+    out.push({
+      x: f1((Math.random() - 0.5) * W * 0.7),
+      y: f1(up ? H * (0.42 - Math.random() * 0.5) : (Math.random() - 0.5) * H * 0.6),
+      a: f1(up ? -90 + (Math.random() - 0.5) * 60 : Math.random() * 360),
+      s: Math.round(m * (up ? 0.25 + Math.random() * 0.3 : 0.12 + Math.random() * 0.2)),
+      seed: (Math.random() * 1e9) | 0,
+    });
+  }
+  return out;
+}
+const shuffle = () => hist.change(() => { S.plants = randomPlants(3 + ((Math.random() * 5) | 0)); });
+document.getElementById('shuffle').onclick = shuffle;
+document.getElementById('clear').onclick = () => hist.change(() => { S.plants = []; });
+document.getElementById('grow').onclick = grow;
+document.getElementById('collapse').onclick = e => {
+  const p = document.getElementById('panel'), c = p.classList.toggle('collapsed');
+  e.target.textContent = c ? '+' : '–';
+  e.target.setAttribute('aria-expanded', !c);
+};
+wireExport(exportSVG, 'l-system');
+
+/* --------------------------- switcher --------------------------- */
+const VARIANTS = [
+  { key: 'A', name: 'Plants' },
+  { key: 'B', name: 'Fractals' },
+  { key: 'C', name: 'Coral' },
+];
+let current = Math.max(0, VARIANTS.findIndex(v =>
+  v.key === new URLSearchParams(location.search).get('variant')));
+
+function setVariant(i) {
+  current = (i + VARIANTS.length) % VARIANTS.length;
+  const v = VARIANTS[current];
+  document.getElementById('label').textContent = `${v.key} — ${v.name}`;
+  document.getElementById('variant-title').textContent = v.name;
+  document.getElementById('fractal-wrap').hidden = v.key !== 'B';
+  document.getElementById('jitter-wrap').hidden = v.key === 'B';
+  gram = null; fillEditor(); applyRules();
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('variant', v.key);
+    history.replaceState(null, '', url);
+  } catch {}
+  render();
+}
+document.getElementById('prev').onclick = () => setVariant(current - 1);
+document.getElementById('next').onclick = () => setVariant(current + 1);
+window.addEventListener('keydown', e => {
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? hist.redo() : hist.undo(); return; }
+  if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); hist.redo(); return; }
+  if (mod) return;
+  const k = e.key.toLowerCase();
+  if (e.key === 'ArrowLeft') setVariant(current - 1);
+  else if (e.key === 'ArrowRight') setVariant(current + 1);
+  else if (k === 'm') hist.change(() => { S.sym = SYM_ORDER[(SYM_ORDER.indexOf(S.sym) + 1) % SYM_ORDER.length]; symEl.value = S.sym; });
+  else if (k === 'h') { P.guide = !P.guide; guideEl.checked = P.guide; render(); }
+  else if (k === 'g') grow();
+  else if (k === 'r') shuffle();
+});
+
+function resize() {
+  W = window.innerWidth; H = window.innerHeight;
+  cx = Math.round(W / 2); cy = Math.round(H / 2);
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  if (gram) render();
+}
+window.addEventListener('resize', resize);
+
+// first visit: a row of weeds along the bottom edge
+function exampleGarden() {
+  const n = 5, base = H / 2 - Math.max(24, H * 0.06), out = [];
+  for (let i = 0; i < n; i++) {
+    const u = i / (n - 1) - 0.5;
+    out.push({
+      x: f1(u * Math.min(W * 0.62, 900) + (W > 700 ? 60 : 0)), y: f1(base),
+      a: f1(-90 + u * 22 + (i % 2 ? 4 : -3)),
+      s: Math.round(H * (0.38 + 0.26 * Math.cos(u * 2.8))),
+      seed: 1013 + i * 7919,
+    });
+  }
+  return out;
+}
+
+let saved = null;
+try {
+  saved = localStorage.getItem('l-system');
+  const pr = JSON.parse(localStorage.getItem('l-system-prefs') || 'null');
+  if (pr) {
+    for (const k of ['len', 'jitter', 'weight']) if (isFinite(pr.P?.[k])) P[k] = +pr.P[k];
+    for (const v of ['A', 'B', 'C']) if (pr.RULES?.[v]?.axiom !== undefined) RULES[v] = { ...RULES[v], ...pr.RULES[v] };
+  }
+  if (saved) restore(saved);
+} catch { saved = null; }
+for (const k of ['len', 'jitter', 'weight']) document.getElementById(k).value = P[k];
+symEl.value = S.sym;
+setColors(C.ink, C.paper);
+resize();
+if (!saved) S.plants = exampleGarden();
+setVariant(current);
+</script>
+</body>
+</html>

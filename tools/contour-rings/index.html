@@ -1,0 +1,805 @@
+<!doctype html>
+<!--
+  Contour Rings — tool #8 of the Design Tools playground (mark family).
+  Draw any shape and it grows concentric offset outlines, like a
+  topographic map or a fingerprint. Drag draws a stroke, a click drops a
+  seed point, symmetry mirrors every mark. A distance field on a coarse
+  grid is contoured with marching squares at k × spacing.
+  Three looks via ?variant=: A rings (stroked iso-lines), B bands
+  (alternating filled bands, evenodd), C merge (smooth-min metaballs —
+  neighbouring ring systems fuse softly). Export SVG / PNG or copy into Figma.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Contour Rings</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #000; overflow: hidden; font-family: ui-sans-serif, system-ui, sans-serif; color-scheme: dark; }
+  #stage { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+
+  /* control panel */
+  #panel {
+    position: fixed; top: 16px; left: 16px; z-index: 10;
+    background: rgba(20,20,20,.85); color: #eee; padding: 14px 16px;
+    border-radius: 10px; font-size: 12px; width: 232px;
+    backdrop-filter: blur(6px);
+    max-height: calc(100% - 100px); overflow-y: auto;
+  }
+  #panel .head { display: flex; justify-content: space-between; align-items: center; }
+  #panel .head button { margin: 0; width: 24px; height: 20px; padding: 0; }
+  #panel.collapsed .body { display: none; }
+  #panel label { display: block; margin-top: 10px; color: #999; }
+  #panel input[type=range] { width: 100%; }
+  #panel select {
+    width: 100%; margin-top: 4px; padding: 4px; border-radius: 6px;
+    border: 1px solid #444; background: #111; color: #eee; font-size: 12px;
+  }
+  #panel .check { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: #999; }
+  #panel .check input { margin: 0; }
+  #panel button {
+    margin-top: 12px; width: 100%; padding: 6px; border-radius: 6px;
+    border: 1px solid #444; background: #111; color: #eee; font-size: 12px; cursor: pointer;
+  }
+  #panel button:focus-visible, #panel select:focus-visible, #panel input:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+  #panel .row { display: flex; gap: 6px; }
+  #panel .row button { flex: 1; margin-top: 8px; }
+  #panel [hidden] { display: none; }
+  #panel .hint { margin-top: 10px; color: #666; line-height: 1.5; }
+  #panel kbd { font: inherit; color: #999; }
+
+  /* ink & paper — shared color block, identical across tools
+     (overrides the generic #panel button rule above) */
+  #panel .swatches { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+  #panel .swatches input[type=color] {
+    flex: 1; height: 26px; padding: 1px; border: 1px solid #444;
+    border-radius: 6px; background: #111; cursor: pointer;
+  }
+  #panel .swatches button {
+    margin-top: 0; width: 30px; height: 26px; padding: 0;
+    border: 1px solid #444; background: #111; color: #eee;
+    border-radius: 6px; cursor: pointer;
+  }
+  #panel .presets { display: flex; gap: 5px; margin-top: 8px; }
+  #panel .presets button {
+    flex: 1; margin-top: 0; width: auto; height: 16px; padding: 0;
+    border: 1px solid #444; border-radius: 4px;
+    overflow: hidden; display: flex; cursor: pointer; background: none;
+  }
+  #panel .presets span { flex: 1; }
+
+  /* prototype switcher — deliberately NOT styled like the design being judged */
+  #switcher {
+    position: fixed; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%); z-index: 10;
+    display: flex; align-items: center; gap: 12px;
+    background: #fff; color: #000; border-radius: 999px; padding: 8px 16px;
+    font-size: 13px; font-weight: 600; box-shadow: 0 4px 20px rgba(0,0,0,.5);
+    user-select: none;
+  }
+  #switcher button { border: 0; background: none; color: #000; font-size: 16px; cursor: pointer; padding: 2px 6px; }
+  #switcher span { min-width: 140px; text-align: center; }
+
+  /* mark kit toast — shared across mark tools */
+  #toast {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 20;
+    background: #fff; color: #000; padding: 8px 14px; border-radius: 999px;
+    font-size: 13px; font-weight: 600; opacity: 0; transition: opacity .2s; pointer-events: none;
+  }
+  #toast.on { opacity: 1; }
+
+  @media (max-width: 600px) {
+    #panel { width: auto; right: 16px; max-height: 50%; }
+    #switcher span { min-width: 90px; }
+  }
+  @media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
+</style>
+</head>
+<body>
+<svg id="stage" xmlns="http://www.w3.org/2000/svg" aria-label="Contour canvas"></svg>
+
+<div id="panel">
+  <div class="head">
+    <strong id="variant-title"></strong>
+    <button id="collapse" title="Hide panel" aria-expanded="true">–</button>
+  </div>
+  <div class="body">
+    <label>Symmetry
+      <select id="sym">
+        <option value="off">Off</option>
+        <option value="x">Mirror ↔</option>
+        <option value="y">Mirror ↕</option>
+        <option value="quad">Quad</option>
+        <option value="kaleido">Kaleido (8)</option>
+      </select>
+    </label>
+    <label>Ring spacing <input type="range" id="spacing" min="4" max="60" step="1" value="14" /></label>
+    <label>Ring count <input type="range" id="count" min="1" max="60" step="1" value="16" /></label>
+    <label id="weight-wrap">Line weight <input type="range" id="weight" min="0.3" max="8" step="0.1" value="1.4" /></label>
+    <label>Wobble <input type="range" id="wobble" min="0" max="1" step="0.01" value="0.25" /></label>
+    <label id="melt-wrap">Melt <input type="range" id="melt" min="0.5" max="4" step="0.1" value="1.5" /></label>
+    <label class="check" id="invert-wrap"><input type="checkbox" id="invert" /> Invert bands</label>
+    <label class="check"><input type="checkbox" id="guide" /> Show guide</label>
+    <label>Colors — ink ⇄ paper</label>
+    <div class="swatches">
+      <input type="color" id="ink" value="#000000" title="Ink" />
+      <button id="swap" title="Swap ink and paper">⇄</button>
+      <input type="color" id="paper" value="#ffffff" title="Paper" />
+    </div>
+    <div class="presets" id="presets"></div>
+    <div class="row">
+      <button id="undo" title="Undo (⌘Z)">Undo</button>
+      <button id="redo" title="Redo (⇧⌘Z)">Redo</button>
+    </div>
+    <div class="row">
+      <button id="shuffle" title="Random shapes (R)">Shuffle</button>
+      <button id="clear" title="Remove every shape">Clear</button>
+    </div>
+    <div class="row">
+      <button id="svg-out">SVG</button>
+      <button id="png-out">PNG</button>
+      <button id="copy-out" title="Copy SVG markup, then paste into Figma">Copy</button>
+    </div>
+    <label class="check"><input type="checkbox" id="bg-out" /> Include paper in export</label>
+    <div class="hint">
+      drag to draw a shape · click for a seed point · <kbd>M</kbd> symmetry ·
+      <kbd>H</kbd> guide · <kbd>R</kbd> shuffle · <kbd>⌘Z</kbd> undo ·
+      export = rings, cropped
+    </div>
+  </div>
+</div>
+
+<div id="switcher">
+  <button id="prev" aria-label="Previous variant">←</button><span id="label"></span><button id="next" aria-label="Next variant">→</button>
+</div>
+<div id="toast" role="status"></div>
+
+<script>
+/* ================================================================
+   MARK KIT — shared block, copied verbatim across the mark tools
+   (dot-bridge, truchet, contour-rings, l-system, op-art-warp).
+   Symmetry matrices, undo history, toast, and SVG / PNG / clipboard
+   export wired to #svg-out, #png-out, #copy-out and #bg-out.
+   Edit it in one tool, then paste the same block into the others.
+================================================================ */
+const NS = 'http://www.w3.org/2000/svg';
+/* symmetry as 2×2 integer matrices [a,b,c,d]: (x,y) → (ax+by, cx+dy) */
+const MATS = {
+  off:  [[1,0,0,1]],
+  x:    [[1,0,0,1], [-1,0,0,1]],
+  y:    [[1,0,0,1], [1,0,0,-1]],
+  quad: [[1,0,0,1], [-1,0,0,1], [1,0,0,-1], [-1,0,0,-1]],
+  kaleido: [[1,0,0,1], [-1,0,0,1], [1,0,0,-1], [-1,0,0,-1],
+            [0,1,1,0], [0,-1,1,0], [0,1,-1,0], [0,-1,-1,0]],
+};
+const SYM_ORDER = Object.keys(MATS);
+const tf = (m, x, y) => [m[0] * x + m[1] * y, m[2] * x + m[3] * y];
+/* does m swap the two diagonals of a square? (mirror-like maps do) */
+const flipsDiagonal = m => { const [p, q] = tf(m, 1, 1); return p * q < 0; };
+const f2 = n => +n.toFixed(2);
+
+/* undo history over string snapshots; onChange(snapshot) after every edit */
+function History(snapshot, restore, onChange) {
+  const u = [], r = [];
+  let before = null;
+  return {
+    begin() { before = snapshot(); },
+    commit() {
+      const now = snapshot();
+      if (before !== null && now !== before) {
+        u.push(before); if (u.length > 200) u.shift();
+        r.length = 0;
+      }
+      before = null; onChange(now);
+    },
+    change(fn) { this.begin(); fn(); this.commit(); },
+    undo() { if (!u.length) return; r.push(snapshot()); restore(u.pop()); onChange(snapshot()); },
+    redo() { if (!r.length) return; u.push(snapshot()); restore(r.pop()); onChange(snapshot()); },
+    get canUndo() { return u.length > 0; },
+    get canRedo() { return r.length > 0; },
+  };
+}
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('on');
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('on'), 1800);
+}
+function download(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+/* getSVG(includePaper) → standalone SVG string, or null when empty */
+function wireExport(getSVG, name) {
+  const bg = () => !!document.getElementById('bg-out')?.checked;
+  const need = () => { const s = getSVG(bg()); if (!s) toast('Nothing to export yet'); return s; };
+  document.getElementById('svg-out').onclick = () => {
+    const s = need(); if (s) download(new Blob([s], { type: 'image/svg+xml' }), name + '.svg');
+  };
+  document.getElementById('png-out').onclick = () => {
+    const s = need(); if (!s) return;
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas'), k = 3;
+      c.width = img.width * k; c.height = img.height * k;
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob(b => download(b, name + '.png'));
+    };
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s);
+  };
+  document.getElementById('copy-out').onclick = () => {
+    const s = need(); if (!s) return;
+    navigator.clipboard.writeText(s)
+      .then(() => toast('SVG copied — paste into Figma'))
+      .catch(() => toast('Clipboard blocked — use the SVG button'));
+  };
+}
+/* ======================== end MARK KIT ======================== */
+
+const svg = document.getElementById('stage');
+let W, H, cx, cy;
+
+/* ------------------------------ state ---------------------------
+   Every mark is a polyline stored as a flat [x0,y0, x1,y1, …] array
+   relative to the canvas center (so a resize keeps it centered).
+   A single point is a seed; a closed blob repeats its first point at
+   the end. Symmetry is baked in when a mark is added — each mirror
+   copy is its own stroke, exactly like truchet bakes its flips.
+---------------------------------------------------------------- */
+const S = { seed: 11, sym: 'quad', strokes: [] };
+const P = { spacing: 14, count: 16, weight: 1.4, wobble: 0.25, melt: 1.5, invert: false, guide: false };
+const f1 = n => Math.round(n * 10) / 10;
+let ver = 0; // bumps whenever S changes, so the field knows to recompute
+
+function addMirrored(flat) {
+  const seen = new Set();
+  for (const m of MATS[S.sym]) {
+    const out = [];
+    for (let i = 0; i < flat.length; i += 2) {
+      const [a, b] = tf(m, flat[i], flat[i + 1]);
+      out.push(f1(a) + 0, f1(b) + 0); // + 0 folds -0 into 0
+    }
+    const k = out.join();
+    if (!seen.has(k)) { seen.add(k); S.strokes.push(out); }
+  }
+}
+
+/* Douglas–Peucker on a flat open polyline [x,y,…] → kept indices */
+function rdp(pts, n, eps) {
+  const keep = new Uint8Array(n); keep[0] = keep[n - 1] = 1;
+  const stack = [0, n - 1], e2 = eps * eps;
+  while (stack.length) {
+    const b = stack.pop(), a = stack.pop();
+    const ax = pts[2 * a], ay = pts[2 * a + 1], ex = pts[2 * b] - ax, ey = pts[2 * b + 1] - ay;
+    const ll = ex * ex + ey * ey;
+    let best = -1, bd = e2;
+    for (let i = a + 1; i < b; i++) {
+      const px = pts[2 * i] - ax, py = pts[2 * i + 1] - ay;
+      let d;
+      if (ll) { const c = px * ey - py * ex; d = c * c / ll; } else d = px * px + py * py;
+      if (d > bd) { bd = d; best = i; }
+    }
+    if (best > 0) { keep[best] = 1; stack.push(a, best, best, b); }
+  }
+  return keep;
+}
+
+/* ---------------------------- noise ------------------------------
+   Seeded value noise for the wobble. It's sampled at symmetry-folded
+   coordinates so the wobble respects the current mirror mode.
+---------------------------------------------------------------- */
+function hash01(i, j) {
+  let h = Math.imul(i, 374761393) ^ Math.imul(j, 668265263) ^ Math.imul(S.seed, 2246822519);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const a = hash01(xi, yi), b = hash01(xi + 1, yi), c = hash01(xi, yi + 1), d = hash01(xi + 1, yi + 1);
+  return (a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v) * 2 - 1;
+}
+
+/* ------------------------- distance field ------------------------
+   Coarse grid (~60k samples) that overhangs the viewport by two cells.
+   Distance to the strokes is found by "dead reckoning": cells near a
+   segment get the exact nearest point, then two raster sweeps hand
+   each cell its neighbours' nearest points. Variant C keeps one field
+   per stroke and fuses them with a polynomial smooth-min (metaballs).
+   The outermost sample ring is forced huge, so every iso-line closes.
+---------------------------------------------------------------- */
+let grid = null;
+function makeGrid(budget) {
+  const g = Math.max(3, Math.sqrt(W * H / budget));
+  const nx = Math.ceil(W / g) + 5, ny = Math.ceil(H / g) + 5, n = nx * ny;
+  grid = { g, nx, ny, x0: -2 * g, y0: -2 * g,
+    D2: new Float32Array(n), QX: new Float32Array(n), QY: new Float32Array(n),
+    F: new Float32Array(n), next: new Int32Array(2 * n), tag: new Int32Array(2 * n), seen: new Int32Array(2 * n) };
+}
+
+function strokeField(strokes, out) {
+  const { g, nx, ny, x0, y0, D2, QX, QY } = grid, pad = 1.5 * g;
+  D2.fill(Infinity); QX.fill(1e7); QY.fill(1e7); // "nowhere" — finite, so no guards below
+  // seed: exact nearest points in a band around every segment
+  for (const s of strokes) {
+    const m = s.length / 2;
+    for (let q = 0; q < Math.max(1, m - 1); q++) {
+      const ax = s[2 * q] + cx, ay = s[2 * q + 1] + cy;
+      const bx = (m > 1 ? s[2 * q + 2] : s[0]) + cx, by = (m > 1 ? s[2 * q + 3] : s[1]) + cy;
+      const i0 = Math.max(0, Math.floor((Math.min(ax, bx) - pad - x0) / g)), i1 = Math.min(nx - 1, Math.ceil((Math.max(ax, bx) + pad - x0) / g));
+      const j0 = Math.max(0, Math.floor((Math.min(ay, by) - pad - y0) / g)), j1 = Math.min(ny - 1, Math.ceil((Math.max(ay, by) + pad - y0) / g));
+      const ex = bx - ax, ey = by - ay, ll = ex * ex + ey * ey;
+      for (let j = j0; j <= j1; j++) {
+        const py = y0 + j * g;
+        for (let i = i0; i <= i1; i++) {
+          const px = x0 + i * g;
+          let t = ll ? ((px - ax) * ex + (py - ay) * ey) / ll : 0;
+          t = t < 0 ? 0 : t > 1 ? 1 : t;
+          const qx = ax + t * ex, qy = ay + t * ey, dx = px - qx, dy = py - qy, d = dx * dx + dy * dy, p = j * nx + i;
+          if (d < D2[p]) { D2[p] = d; QX[p] = qx; QY[p] = qy; }
+        }
+      }
+    }
+  }
+  // two sweeps, four already-visited neighbours each (border cells are skipped)
+  // (forward: left + the three above; backward: right + the three below)
+  const sweep = (jA, jB, dj, iA, iB, di) => {
+    const o1 = -di, o2 = -dj * nx - 1, o3 = -dj * nx, o4 = -dj * nx + 1;
+    for (let j = jA; j !== jB; j += dj) {
+      const py = y0 + j * g;
+      for (let i = iA; i !== iB; i += di) {
+        const p = j * nx + i, px = x0 + i * g;
+        let best = D2[p], q = -1, dx, dy, d;
+        dx = px - QX[p + o1]; dy = py - QY[p + o1]; d = dx * dx + dy * dy; if (d < best) { best = d; q = p + o1; }
+        dx = px - QX[p + o2]; dy = py - QY[p + o2]; d = dx * dx + dy * dy; if (d < best) { best = d; q = p + o2; }
+        dx = px - QX[p + o3]; dy = py - QY[p + o3]; d = dx * dx + dy * dy; if (d < best) { best = d; q = p + o3; }
+        dx = px - QX[p + o4]; dy = py - QY[p + o4]; d = dx * dx + dy * dy; if (d < best) { best = d; q = p + o4; }
+        if (q >= 0) { D2[p] = best; QX[p] = QX[q]; QY[p] = QY[q]; }
+      }
+    }
+  };
+  sweep(1, ny - 1, 1, 1, nx - 1, 1);
+  sweep(ny - 2, 0, -1, nx - 2, 0, -1);
+  for (let p = 0; p < out.length; p++) out[p] = Math.sqrt(D2[p]);
+}
+
+function computeField(merge) {
+  const { g, nx, ny, x0, y0, F } = grid;
+  if (!merge) strokeField(S.strokes, F);
+  else {
+    // metaballs: polynomial smooth-min, k scaled by the ring spacing
+    const tmp = new Float32Array(F.length), k = P.spacing * P.melt;
+    F.fill(1e7);
+    for (const s of S.strokes) {
+      strokeField([s], tmp);
+      for (let p = 0; p < F.length; p++) {
+        const a = F[p], b = tmp[p], h = Math.max(k - Math.abs(a - b), 0) / k;
+        F[p] = Math.min(a, b) - h * h * k * 0.25;
+      }
+    }
+  }
+  if (P.wobble > 0) {
+    const fold = S.sym;
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      const p = j * nx + i, d = F[p];
+      if (d > 1e5) continue;
+      let x = x0 + i * g - cx, y = y0 + j * g - cy;
+      if (fold === 'x' || fold === 'quad' || fold === 'kaleido') x = Math.abs(x);
+      if (fold === 'y' || fold === 'quad' || fold === 'kaleido') y = Math.abs(y);
+      if (fold === 'kaleido' && y > x) { const t = x; x = y; y = t; }
+      const n = vnoise(x / 150, y / 150) * 0.8 + vnoise(x / 55 + 17.3, y / 55 - 9.1) * 0.2;
+      F[p] = d + P.wobble * n * (P.spacing * 1.1 + d * 0.18);
+    }
+  }
+  for (let i = 0; i < nx; i++) F[i] = F[(ny - 1) * nx + i] = 1e9;
+  for (let j = 0; j < ny; j++) F[j * nx] = F[j * nx + nx - 1] = 1e9;
+}
+
+/* ------------------------- marching squares ----------------------
+   Inside = value < level. Corners a b c d run clockwise (TL TR BR BL),
+   edges 0..3 = top, right, bottom, left. Walking the corners clockwise
+   an edge is either in→out (a segment starts there) or out→in (one
+   ends there); neighbours see a shared edge flipped, so the segments
+   chain into oriented loops via next[edge]. Saddles split by the
+   cell-center value. Table index = corner bits | centerInside << 4.
+---------------------------------------------------------------- */
+const MS = [];
+for (let c = 0; c < 32; c++) {
+  const inn = [c & 1, c >> 1 & 1, c >> 2 & 1, c >> 3 & 1], mid = c >> 4 & 1, st = [], en = [];
+  for (let e = 0; e < 4; e++) {
+    if (inn[e] && !inn[(e + 1) % 4]) st.push(e);
+    if (!inn[e] && inn[(e + 1) % 4]) en.push(e);
+  }
+  const segs = [];
+  for (const s of st) for (let k = 1; k < 4; k++) {
+    const e = mid ? (s + k) % 4 : (s - k + 4) % 4;
+    if (en.includes(e)) { segs.push(s, e); break; }
+  }
+  MS.push(segs);
+}
+
+let rings = null, lastKey = '';
+function computeRings(merge) {
+  // C keeps one field per stroke, so many strokes trade resolution for speed
+  const budget = merge ? Math.max(18000, Math.min(60000, 900000 / Math.max(1, S.strokes.length))) : 60000;
+  if (!grid || grid.W !== W || grid.H !== H || grid.budget !== budget) { makeGrid(budget); grid.W = W; grid.H = H; grid.budget = budget; }
+  const { g, nx, ny, x0, y0, F, next, tag, seen } = grid, NH = nx * ny, s = P.spacing, N = P.count;
+  const loops = [];
+  let dropped = 0, bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+  if (!S.strokes.length) return { loops, dropped, box: null };
+  computeField(merge);
+
+  // one pass over the cells; each crossing level gets its own segment list
+  const lists = Array.from({ length: N + 1 }, () => []);
+  const ge = (e, i, j) => e === 0 ? j * nx + i : e === 1 ? NH + j * nx + i + 1 : e === 2 ? (j + 1) * nx + i : NH + j * nx + i;
+  for (let j = 0; j < ny - 1; j++) for (let i = 0; i < nx - 1; i++) {
+    const p = j * nx + i, va = F[p], vb = F[p + 1], vc = F[p + nx + 1], vd = F[p + nx];
+    const mn = Math.min(va, vb, vc, vd), mx = Math.max(va, vb, vc, vd);
+    const kHi = Math.min(N, Math.floor(mx / s));
+    for (let k = Math.max(1, Math.floor(mn / s) + 1); k <= kHi; k++) {
+      const L = k * s;
+      let c = (va < L) | (vb < L) << 1 | (vc < L) << 2 | (vd < L) << 3;
+      if (c === 5 || c === 10) c |= ((va + vb + vc + vd) / 4 < L) << 4;
+      const t = MS[c], li = lists[k];
+      for (let q = 0; q < t.length; q += 2) li.push(ge(t[q], i, j), ge(t[q + 1], i, j));
+    }
+  }
+
+  // stitch each level's segments into closed loops, then thin them out
+  const border = (i, j) => i === 0 || j === 0 || i === nx - 1 || j === ny - 1;
+  let stamp = (grid.stamp || 0);
+  for (let k = 1; k <= N; k++) {
+    const li = lists[k], L = k * s;
+    if (!li.length) continue;
+    stamp++;
+    for (let q = 0; q < li.length; q += 2) { next[li[q]] = li[q + 1]; tag[li[q]] = stamp; }
+    for (let q = 0; q < li.length; q += 2) {
+      const s0 = li[q];
+      if (seen[s0] === stamp) continue;
+      const pts = [];
+      let e = s0, onBorder = true;
+      do {
+        seen[e] = stamp;
+        const h = e < NH, p = h ? e : e - NH, i = p % nx, j = (p / nx) | 0;
+        const pa = F[p], pb = F[h ? p + 1 : p + nx], t = (L - pa) / (pb - pa);
+        pts.push(h ? x0 + (i + t) * g : x0 + i * g, h ? y0 + j * g : y0 + (j + t) * g);
+        if (!border(i, j) && !(h ? border(i + 1, j) : border(i, j + 1))) onBorder = false;
+        if (tag[e] !== stamp) break; // open chain (shouldn't happen)
+        e = next[e];
+      } while (e !== s0 && seen[e] !== stamp);
+      // a loop running only along the forced border is a phantom frame
+      if (onBorder) { dropped++; continue; }
+      const n = pts.length / 2;
+      if (n < 3) continue;
+      // split the closed loop at its far point so Douglas–Peucker has two ends
+      let far = 0, fd = -1;
+      for (let a = 1; a < n; a++) { const dx = pts[2 * a] - pts[0], dy = pts[2 * a + 1] - pts[1], d = dx * dx + dy * dy; if (d > fd) { fd = d; far = a; } }
+      pts.push(pts[0], pts[1]);
+      const k1 = rdp(pts.slice(0, 2 * far + 2), far + 1, 0.3);
+      const k2 = rdp(pts.slice(2 * far), n - far + 1, 0.3);
+      const out = [];
+      for (let a = 0; a <= far; a++) if (k1[a]) out.push(pts[2 * a], pts[2 * a + 1]);
+      for (let a = 1; a < n - far; a++) if (k2[a]) out.push(pts[2 * (far + a)], pts[2 * (far + a) + 1]);
+      if (out.length < 6) continue;
+      let lx0 = Infinity, ly0 = Infinity, lx1 = -Infinity, ly1 = -Infinity;
+      for (let a = 0; a < out.length; a += 2) {
+        lx0 = Math.min(lx0, out[a]); lx1 = Math.max(lx1, out[a]);
+        ly0 = Math.min(ly0, out[a + 1]); ly1 = Math.max(ly1, out[a + 1]);
+      }
+      // wobble pinches off specks along ridges — drop the ones too small to read
+      // (only when wobbling: at 0 a tiny loop is a real ring around a seed)
+      if (P.wobble > 0 && Math.hypot(lx1 - lx0, ly1 - ly0) < Math.max(8, s * 0.7)) continue;
+      bx0 = Math.min(bx0, lx0); by0 = Math.min(by0, ly0); bx1 = Math.max(bx1, lx1); by1 = Math.max(by1, ly1);
+      loops.push(out);
+    }
+  }
+  grid.stamp = stamp;
+  return { loops, dropped, box: loops.length ? [bx0, by0, bx1, by1] : null };
+}
+
+/* loops → one path: quadratic curves through the midpoints (light smoothing) */
+function loopsPath(loops, ox, oy) {
+  let d = '';
+  for (const p of loops) {
+    const n = p.length / 2, X = a => p[2 * (a % n)] - ox, Y = a => p[2 * (a % n) + 1] - oy;
+    d += `M${f1((X(n - 1) + X(0)) / 2)} ${f1((Y(n - 1) + Y(0)) / 2)}`;
+    for (let a = 0; a < n; a++)
+      d += `Q${f1(X(a))} ${f1(Y(a))} ${f1((X(a) + X(a + 1)) / 2)} ${f1((Y(a) + Y(a + 1)) / 2)}`;
+    d += 'Z';
+  }
+  return d;
+}
+
+/* frame = [x, y, w, h] the bands fill out to when the outside is inked */
+function buildArt(ox, oy, frame) {
+  const V = VARIANTS[current].key;
+  if (!rings.loops.length) return '';
+  const d = ox === 0 && oy === 0 ? (rings.d0 ??= loopsPath(rings.loops, 0, 0)) : loopsPath(rings.loops, ox, oy);
+  if (V === 'B') {
+    // evenodd: a point is inked when an odd number of contours enclose it, so
+    // the band just inside the outermost ring is ink and the outside is paper.
+    // A frame rect flips every band (Invert); each dropped phantom frame
+    // (a level that only ran along the forced border) flips them back.
+    const needFrame = (rings.dropped % 2 === 1) !== P.invert;
+    const [fx, fy, fw, fh] = frame;
+    const fr = needFrame ? `M${f1(fx)} ${f1(fy)}h${f1(fw)}v${f1(fh)}h${f1(-fw)}Z` : '';
+    return `<path fill="${C.ink}" fill-rule="evenodd" d="${fr}${d}"/>`;
+  }
+  return `<path fill="none" stroke="${C.ink}" stroke-width="${P.weight}" stroke-linejoin="round" d="${d}"/>`;
+}
+
+const fieldKey = () => {
+  const merge = VARIANTS[current].key === 'C';
+  return [ver, W, H, P.spacing, P.count, P.wobble, merge, merge ? P.melt : 0, P.wobble ? S.sym : '', S.seed].join('|');
+};
+let timing = { field: 0, total: 0 };
+function render() {
+  const t0 = performance.now(), key = fieldKey();
+  if (key !== lastKey) {
+    rings = computeRings(VARIANTS[current].key === 'C');
+    lastKey = key;
+    timing.field = performance.now() - t0;
+  }
+  let html = `<rect width="${W}" height="${H}" fill="${C.paper}"/>`;
+  html += `<g id="art">${buildArt(0, 0, [-10, -10, W + 20, H + 20])}</g><g id="over"></g>`;
+  if (P.guide) {
+    // the raw marks, thin, difference-blended so they read on any duo
+    const st = `stroke="#fff" fill="none" stroke-width="1" style="mix-blend-mode:difference"`;
+    let g = '', dots = '';
+    for (const s of S.strokes) {
+      if (s.length === 2) { dots += `<circle cx="${f1(s[0] + cx)}" cy="${f1(s[1] + cy)}" r="3" ${st}/>`; continue; }
+      g += 'M' + s.map((v, i) => f1(v + (i & 1 ? cy : cx))).join(' ');
+    }
+    html += `<path d="${g}" ${st}/>` + dots;
+    const ax = `stroke="#fff" stroke-width="1.5" stroke-dasharray="6 6" style="mix-blend-mode:difference"`;
+    if (['x', 'quad', 'kaleido'].includes(S.sym)) html += `<line x1="${cx}" y1="0" x2="${cx}" y2="${H}" ${ax}/>`;
+    if (['y', 'quad', 'kaleido'].includes(S.sym)) html += `<line x1="0" y1="${cy}" x2="${W}" y2="${cy}" ${ax}/>`;
+    if (S.sym === 'kaleido') html += `<path d="M${cx - H} ${cy - H}L${cx + H} ${cy + H}M${cx - H} ${cy + H}L${cx + H} ${cy - H}" ${ax}/>`;
+  }
+  svg.innerHTML = html;
+  drawPreview();
+  document.getElementById('undo').disabled = !hist.canUndo;
+  document.getElementById('redo').disabled = !hist.canRedo;
+  timing.total = performance.now() - t0;
+}
+/* slider drags: coalesce into one render per frame */
+let queued = 0;
+const schedule = () => { if (!queued) queued = requestAnimationFrame(() => { queued = 0; render(); }); };
+
+function exportSVG(withPaper) {
+  if (!rings || !rings.box) return null;
+  const pad = 16 + P.weight, [x0, y0, x1, y1] = rings.box;
+  const ox = Math.floor(x0 - pad), oy = Math.floor(y0 - pad);
+  const w = Math.ceil(x1 + pad) - ox, h = Math.ceil(y1 + pad) - oy;
+  return `<svg xmlns="${NS}" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
+    (withPaper ? `<rect width="${w}" height="${h}" fill="${C.paper}"/>` : '') +
+    buildArt(ox, oy, [0, 0, w, h]) + `</svg>`;
+}
+
+/* ------------------------- undo / storage ---------------------- */
+const serialize = () => JSON.stringify({ seed: S.seed, sym: S.sym, s: S.strokes });
+function restore(str) {
+  const d = JSON.parse(str);
+  S.seed = d.seed; S.sym = d.sym; S.strokes = d.s;
+  symEl.value = S.sym; ver++;
+}
+const hist = History(serialize, restore, snap => {
+  ver++;
+  try { localStorage.setItem('contour-rings', snap); } catch {}
+  if (W) render();
+});
+
+/* ----------------------------- shapes ---------------------------- */
+function blob(x, y, r, rnd) {
+  const lobes = 2 + (rnd() * 4 | 0), ph = rnd() * 6.28, amp = 0.12 + rnd() * 0.22, out = [];
+  for (let a = 0; a < 48; a++) {
+    const t = a / 48 * Math.PI * 2;
+    const rr = r * (1 + amp * Math.sin(lobes * t + ph) + 0.08 * Math.sin((lobes + 3) * t + ph * 2));
+    out.push(f1(x + rr * Math.cos(t)), f1(y + rr * Math.sin(t)));
+  }
+  return out.concat(out[0], out[1]); // closed
+}
+function mulberry(a) {
+  return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+/* 2–5 random blobs and seed points, mirrored by the current symmetry */
+function shuffle() {
+  hist.change(() => {
+    const rnd = Math.random;
+    S.seed = (rnd() * 1e9) | 0; S.strokes = [];
+    const n = 2 + (rnd() * 4 | 0), sx = Math.min(W, 1400) * 0.34, sy = Math.min(H, 1000) * 0.32;
+    for (let i = 0; i < n; i++) {
+      const x = (rnd() * 2 - 1) * sx, y = (rnd() * 2 - 1) * sy;
+      addMirrored(rnd() < 0.3 ? [f1(x), f1(y)] : blob(x, y, 22 + rnd() * 70, rnd));
+    }
+  });
+}
+/* first visit: a lobed blob, a seed and a hooked stroke, quad-mirrored */
+function example() {
+  const rnd = mulberry(5);
+  S.sym = 'quad'; S.seed = 11; S.strokes = [];
+  addMirrored(blob(-200, -115, 62, rnd));
+  addMirrored([-62, -48]);
+  const hook = [];
+  for (let a = 0; a <= 24; a++) { const t = a / 24; hook.push(f1(-360 + t * 150), f1(30 + Math.sin(t * 3.4) * 70 + t * 40)); }
+  addMirrored(hook);
+}
+
+/* ----------------------------- input ----------------------------
+   Drag = one stroke (raw points, thinned on release); a click that
+   never travels drops a seed point. While dragging only the raw
+   stroke is redrawn on top of the previous rings; the field is
+   recomputed once, on pointerup.
+---------------------------------------------------------------- */
+let drawing = null, travelled = 0;
+function pos(e) {
+  const r = svg.getBoundingClientRect();
+  return [e.clientX - r.left - cx, e.clientY - r.top - cy];
+}
+function drawPreview() {
+  const o = document.getElementById('over');
+  if (!o) return;
+  if (!drawing || drawing.length < 4) { o.innerHTML = ''; return; }
+  let d = '';
+  for (const m of MATS[S.sym]) {
+    for (let i = 0; i < drawing.length; i += 2) {
+      const [a, b] = tf(m, drawing[i], drawing[i + 1]);
+      d += (i ? 'L' : 'M') + f1(a + cx) + ' ' + f1(b + cy);
+    }
+  }
+  o.innerHTML = `<path d="${d}" fill="none" stroke="${C.ink}" stroke-width="${Math.max(1.5, P.weight)}" stroke-linecap="round" stroke-linejoin="round"/>`;
+}
+svg.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  svg.setPointerCapture(e.pointerId);
+  drawing = pos(e); travelled = 0;
+});
+svg.addEventListener('pointermove', e => {
+  if (!drawing) return;
+  const [x, y] = pos(e), n = drawing.length;
+  const d = Math.hypot(x - drawing[n - 2], y - drawing[n - 1]);
+  if (d < 2) return;
+  travelled += d;
+  drawing.push(x, y);
+  drawPreview();
+});
+function endDraw() {
+  if (!drawing) return;
+  let pts = drawing;
+  drawing = null;
+  if (travelled < 5) pts = pts.slice(0, 2); // a click: seed point
+  else {
+    const n = pts.length / 2;
+    // close the loop when the stroke ends near where it began
+    if (n > 3 && Math.hypot(pts[0] - pts[2 * n - 2], pts[1] - pts[2 * n - 1]) < 28) pts.push(pts[0], pts[1]);
+    const keep = rdp(pts, pts.length / 2, 0.8);
+    pts = pts.filter((_, i) => keep[i >> 1]);
+  }
+  hist.change(() => addMirrored(pts.map(f1)));
+}
+svg.addEventListener('pointerup', endDraw);
+svg.addEventListener('pointercancel', endDraw);
+
+/* ------------------------------ colors --------------------------
+   Ink & Paper — every tool in this playground is two colors: the
+   mark (ink) and the ground (paper). Both live in the URL so a good
+   combo is a bookmarkable link. Presets are shared playground-wide.
+---------------------------------------------------------------- */
+const PRESETS = [
+  { name: 'Print',     paper: '#ffffff', ink: '#000000' },
+  { name: 'Blueprint', paper: '#0b2447', ink: '#a9d6ff' },
+  { name: 'Riso Red',  paper: '#f7f1e1', ink: '#ff4b2e' },
+  { name: 'Terminal',  paper: '#0a0f0a', ink: '#33ff66' },
+  { name: 'Butter',    paper: '#ffd966', ink: '#33200a' },
+  { name: 'Midnight',  paper: '#000000', ink: '#9d5cff' },
+];
+const C = { ink: '#a9d6ff', paper: '#0b2447' };
+{
+  const q = new URLSearchParams(location.search);
+  for (const k of ['ink', 'paper'])
+    if (/^[0-9a-fA-F]{6}$/.test(q.get(k) || '')) C[k] = '#' + q.get(k);
+}
+const inkEl = document.getElementById('ink'), paperEl = document.getElementById('paper');
+function setColors(ink, paper) {
+  C.ink = ink; C.paper = paper;
+  inkEl.value = ink; paperEl.value = paper;
+  document.body.style.background = paper;
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('ink', ink.slice(1));
+    url.searchParams.set('paper', paper.slice(1));
+    history.replaceState(null, '', url);
+  } catch {}
+  if (W) render();
+}
+inkEl.addEventListener('input', e => setColors(e.target.value, C.paper));
+paperEl.addEventListener('input', e => setColors(C.ink, e.target.value));
+document.getElementById('swap').onclick = () => setColors(C.paper, C.ink);
+for (const p of PRESETS) {
+  const b = document.createElement('button');
+  b.title = p.name;
+  b.innerHTML = `<span style="background:${p.paper}"></span><span style="background:${p.ink}"></span>`;
+  b.onclick = () => setColors(p.ink, p.paper);
+  document.getElementById('presets').appendChild(b);
+}
+
+/* ---------------------------- controls -------------------------- */
+const symEl = document.getElementById('sym');
+// symmetry is an edit (undoable) — it applies to marks drawn from now on
+symEl.addEventListener('input', e => hist.change(() => { S.sym = e.target.value; }));
+for (const k of ['spacing', 'count', 'weight', 'wobble', 'melt'])
+  document.getElementById(k).addEventListener('input', e => { P[k] = +e.target.value; schedule(); });
+document.getElementById('invert').addEventListener('input', e => { P.invert = e.target.checked; render(); });
+const guideEl = document.getElementById('guide');
+guideEl.addEventListener('input', e => { P.guide = e.target.checked; render(); });
+document.getElementById('undo').onclick = () => hist.undo();
+document.getElementById('redo').onclick = () => hist.redo();
+document.getElementById('shuffle').onclick = shuffle;
+document.getElementById('clear').onclick = () => hist.change(() => { S.strokes = []; });
+document.getElementById('collapse').onclick = e => {
+  const p = document.getElementById('panel'), c = p.classList.toggle('collapsed');
+  e.target.textContent = c ? '+' : '–';
+  e.target.setAttribute('aria-expanded', !c);
+};
+wireExport(exportSVG, 'contour-rings');
+
+/* --------------------------- switcher --------------------------- */
+const VARIANTS = [
+  { key: 'A', name: 'Rings' },
+  { key: 'B', name: 'Bands' },
+  { key: 'C', name: 'Merge' },
+];
+let current = Math.max(0, VARIANTS.findIndex(v =>
+  v.key === new URLSearchParams(location.search).get('variant')));
+
+function setVariant(i) {
+  current = (i + VARIANTS.length) % VARIANTS.length;
+  const v = VARIANTS[current];
+  document.getElementById('label').textContent = `${v.key} — ${v.name}`;
+  document.getElementById('variant-title').textContent = v.name;
+  document.getElementById('weight-wrap').hidden = v.key === 'B';
+  document.getElementById('invert-wrap').hidden = v.key !== 'B';
+  document.getElementById('melt-wrap').hidden = v.key !== 'C';
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('variant', v.key);
+    history.replaceState(null, '', url);
+  } catch {}
+  render();
+}
+document.getElementById('prev').onclick = () => setVariant(current - 1);
+document.getElementById('next').onclick = () => setVariant(current + 1);
+window.addEventListener('keydown', e => {
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? hist.redo() : hist.undo(); return; }
+  if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); hist.redo(); return; }
+  if (mod) return;
+  const k = e.key.toLowerCase();
+  if (e.key === 'ArrowLeft') setVariant(current - 1);
+  else if (e.key === 'ArrowRight') setVariant(current + 1);
+  else if (k === 'm') hist.change(() => { S.sym = SYM_ORDER[(SYM_ORDER.indexOf(S.sym) + 1) % SYM_ORDER.length]; symEl.value = S.sym; toast('Symmetry: ' + symEl.selectedOptions[0].text); });
+  else if (k === 'h') { P.guide = !P.guide; guideEl.checked = P.guide; render(); }
+  else if (k === 'r') shuffle();
+});
+
+function resize() {
+  W = window.innerWidth; H = window.innerHeight;
+  cx = Math.round(W / 2); cy = Math.round(H / 2);
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  render();
+}
+window.addEventListener('resize', resize);
+
+let saved = null;
+try { saved = localStorage.getItem('contour-rings'); } catch {}
+try { if (saved) restore(saved); else example(); } catch { example(); }
+symEl.value = S.sym;
+setColors(C.ink, C.paper);
+resize();
+setVariant(current);
+</script>
+</body>
+</html>
