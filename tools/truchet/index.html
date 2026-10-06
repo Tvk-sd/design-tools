@@ -1,0 +1,544 @@
+<!doctype html>
+<!--
+  Truchet Tiler — tool #7 of the Design Tools playground (mark family).
+  Every grid cell holds one of two tile orientations; neighbours connect
+  into mazes, worms and blobs. Paint cells to flip them, symmetry mirrors
+  every flip. Three tile sets via ?variant=: A arcs (quarter circles),
+  B fill (two-tone Smith tiles — the "melting" look), C diagonals (10 PRINT).
+  Export SVG / PNG or copy SVG into Figma.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Truchet Tiler</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #000; overflow: hidden; font-family: ui-sans-serif, system-ui, sans-serif; color-scheme: dark; }
+  #stage { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+
+  /* control panel */
+  #panel {
+    position: fixed; top: 16px; left: 16px; z-index: 10;
+    background: rgba(20,20,20,.85); color: #eee; padding: 14px 16px;
+    border-radius: 10px; font-size: 12px; width: 232px;
+    backdrop-filter: blur(6px);
+    max-height: calc(100% - 100px); overflow-y: auto;
+  }
+  #panel .head { display: flex; justify-content: space-between; align-items: center; }
+  #panel .head button { margin: 0; width: 24px; height: 20px; padding: 0; }
+  #panel.collapsed .body { display: none; }
+  #panel label { display: block; margin-top: 10px; color: #999; }
+  #panel input[type=range] { width: 100%; }
+  #panel select {
+    width: 100%; margin-top: 4px; padding: 4px; border-radius: 6px;
+    border: 1px solid #444; background: #111; color: #eee; font-size: 12px;
+  }
+  #panel .check { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: #999; }
+  #panel .check input { margin: 0; }
+  #panel button {
+    margin-top: 12px; width: 100%; padding: 6px; border-radius: 6px;
+    border: 1px solid #444; background: #111; color: #eee; font-size: 12px; cursor: pointer;
+  }
+  #panel button:focus-visible, #panel select:focus-visible, #panel input:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+  #panel .row { display: flex; gap: 6px; }
+  #panel .row button { flex: 1; margin-top: 8px; }
+  #panel .hint { margin-top: 10px; color: #666; line-height: 1.5; }
+  #panel kbd { font: inherit; color: #999; }
+
+  /* ink & paper — shared color block, identical across tools
+     (overrides the generic #panel button rule above) */
+  #panel .swatches { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+  #panel .swatches input[type=color] {
+    flex: 1; height: 26px; padding: 1px; border: 1px solid #444;
+    border-radius: 6px; background: #111; cursor: pointer;
+  }
+  #panel .swatches button {
+    margin-top: 0; width: 30px; height: 26px; padding: 0;
+    border: 1px solid #444; background: #111; color: #eee;
+    border-radius: 6px; cursor: pointer;
+  }
+  #panel .presets { display: flex; gap: 5px; margin-top: 8px; }
+  #panel .presets button {
+    flex: 1; margin-top: 0; width: auto; height: 16px; padding: 0;
+    border: 1px solid #444; border-radius: 4px;
+    overflow: hidden; display: flex; cursor: pointer; background: none;
+  }
+  #panel .presets span { flex: 1; }
+
+  /* prototype switcher — deliberately NOT styled like the design being judged */
+  #switcher {
+    position: fixed; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%); z-index: 10;
+    display: flex; align-items: center; gap: 12px;
+    background: #fff; color: #000; border-radius: 999px; padding: 8px 16px;
+    font-size: 13px; font-weight: 600; box-shadow: 0 4px 20px rgba(0,0,0,.5);
+    user-select: none;
+  }
+  #switcher button { border: 0; background: none; color: #000; font-size: 16px; cursor: pointer; padding: 2px 6px; }
+  #switcher span { min-width: 140px; text-align: center; }
+
+  /* mark kit toast — shared across mark tools */
+  #toast {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 20;
+    background: #fff; color: #000; padding: 8px 14px; border-radius: 999px;
+    font-size: 13px; font-weight: 600; opacity: 0; transition: opacity .2s; pointer-events: none;
+  }
+  #toast.on { opacity: 1; }
+
+  @media (max-width: 600px) {
+    #panel { width: auto; right: 16px; max-height: 50%; }
+    #switcher span { min-width: 90px; }
+  }
+  @media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
+</style>
+</head>
+<body>
+<svg id="stage" xmlns="http://www.w3.org/2000/svg" aria-label="Tile canvas"></svg>
+
+<div id="panel">
+  <div class="head">
+    <strong id="variant-title"></strong>
+    <button id="collapse" title="Hide panel" aria-expanded="true">–</button>
+  </div>
+  <div class="body">
+    <label>Base pattern
+      <select id="base">
+        <option value="random">Random</option>
+        <option value="checker">Checker</option>
+        <option value="rings">Rings</option>
+        <option value="waves">Waves</option>
+        <option value="solid">Solid</option>
+      </select>
+    </label>
+    <label>Symmetry
+      <select id="sym">
+        <option value="off">Off</option>
+        <option value="x">Mirror ↔</option>
+        <option value="y">Mirror ↕</option>
+        <option value="quad">Quad</option>
+        <option value="kaleido">Kaleido (8)</option>
+      </select>
+    </label>
+    <label>Cell size <input type="range" id="cell" min="12" max="160" step="1" value="56" /></label>
+    <label id="weight-wrap">Line weight <input type="range" id="weight" min="0.02" max="0.9" step="0.01" value="0.18" /></label>
+    <label class="check" id="invert-wrap"><input type="checkbox" id="invert" /> Invert fill</label>
+    <label class="check"><input type="checkbox" id="guide" /> Show cell grid</label>
+    <label>Colors — ink ⇄ paper</label>
+    <div class="swatches">
+      <input type="color" id="ink" value="#000000" title="Ink" />
+      <button id="swap" title="Swap ink and paper">⇄</button>
+      <input type="color" id="paper" value="#ffffff" title="Paper" />
+    </div>
+    <div class="presets" id="presets"></div>
+    <div class="row">
+      <button id="undo" title="Undo (⌘Z)">Undo</button>
+      <button id="redo" title="Redo (⇧⌘Z)">Redo</button>
+    </div>
+    <div class="row">
+      <button id="shuffle" title="New random seed (R)">Shuffle</button>
+      <button id="clear" title="Remove painted flips">Reset</button>
+    </div>
+    <div class="row">
+      <button id="svg-out">SVG</button>
+      <button id="png-out">PNG</button>
+      <button id="copy-out" title="Copy SVG markup, then paste into Figma">Copy</button>
+    </div>
+    <label class="check"><input type="checkbox" id="bg-out" /> Include paper in export</label>
+    <div class="hint">
+      click or drag to flip tiles · <kbd>M</kbd> symmetry · <kbd>B</kbd> base ·
+      <kbd>H</kbd> grid · <kbd>R</kbd> shuffle · <kbd>⌘Z</kbd> undo ·
+      export = visible tiles
+    </div>
+  </div>
+</div>
+
+<div id="switcher">
+  <button id="prev" aria-label="Previous variant">←</button><span id="label"></span><button id="next" aria-label="Next variant">→</button>
+</div>
+<div id="toast" role="status"></div>
+
+<script>
+/* ================================================================
+   MARK KIT — shared block, copied verbatim across the mark tools
+   (dot-bridge, truchet, contour-rings, l-system, op-art-warp).
+   Symmetry matrices, undo history, toast, and SVG / PNG / clipboard
+   export wired to #svg-out, #png-out, #copy-out and #bg-out.
+   Edit it in one tool, then paste the same block into the others.
+================================================================ */
+const NS = 'http://www.w3.org/2000/svg';
+/* symmetry as 2×2 integer matrices [a,b,c,d]: (x,y) → (ax+by, cx+dy) */
+const MATS = {
+  off:  [[1,0,0,1]],
+  x:    [[1,0,0,1], [-1,0,0,1]],
+  y:    [[1,0,0,1], [1,0,0,-1]],
+  quad: [[1,0,0,1], [-1,0,0,1], [1,0,0,-1], [-1,0,0,-1]],
+  kaleido: [[1,0,0,1], [-1,0,0,1], [1,0,0,-1], [-1,0,0,-1],
+            [0,1,1,0], [0,-1,1,0], [0,1,-1,0], [0,-1,-1,0]],
+};
+const SYM_ORDER = Object.keys(MATS);
+const tf = (m, x, y) => [m[0] * x + m[1] * y, m[2] * x + m[3] * y];
+/* does m swap the two diagonals of a square? (mirror-like maps do) */
+const flipsDiagonal = m => { const [p, q] = tf(m, 1, 1); return p * q < 0; };
+const f2 = n => +n.toFixed(2);
+
+/* undo history over string snapshots; onChange(snapshot) after every edit */
+function History(snapshot, restore, onChange) {
+  const u = [], r = [];
+  let before = null;
+  return {
+    begin() { before = snapshot(); },
+    commit() {
+      const now = snapshot();
+      if (before !== null && now !== before) {
+        u.push(before); if (u.length > 200) u.shift();
+        r.length = 0;
+      }
+      before = null; onChange(now);
+    },
+    change(fn) { this.begin(); fn(); this.commit(); },
+    undo() { if (!u.length) return; r.push(snapshot()); restore(u.pop()); onChange(snapshot()); },
+    redo() { if (!r.length) return; u.push(snapshot()); restore(r.pop()); onChange(snapshot()); },
+    get canUndo() { return u.length > 0; },
+    get canRedo() { return r.length > 0; },
+  };
+}
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('on');
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('on'), 1800);
+}
+function download(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+/* getSVG(includePaper) → standalone SVG string, or null when empty */
+function wireExport(getSVG, name) {
+  const bg = () => !!document.getElementById('bg-out')?.checked;
+  const need = () => { const s = getSVG(bg()); if (!s) toast('Nothing to export yet'); return s; };
+  document.getElementById('svg-out').onclick = () => {
+    const s = need(); if (s) download(new Blob([s], { type: 'image/svg+xml' }), name + '.svg');
+  };
+  document.getElementById('png-out').onclick = () => {
+    const s = need(); if (!s) return;
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas'), k = 3;
+      c.width = img.width * k; c.height = img.height * k;
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob(b => download(b, name + '.png'));
+    };
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s);
+  };
+  document.getElementById('copy-out').onclick = () => {
+    const s = need(); if (!s) return;
+    navigator.clipboard.writeText(s)
+      .then(() => toast('SVG copied — paste into Figma'))
+      .catch(() => toast('Clipboard blocked — use the SVG button'));
+  };
+}
+/* ======================== end MARK KIT ======================== */
+
+const svg = document.getElementById('stage');
+let W, H, cx, cy;
+
+/* ------------------------------ state ---------------------------
+   Each cell (i,j) holds an orientation 0 or 1:
+     0 = arcs hug the top-left + bottom-right corners  ╯╭
+     1 = arcs hug the top-right + bottom-left corners  ╮╰
+   A base pattern fills every cell; painted cells override it.
+   Cell (i,j) spans [i, i+1] × [j, j+1] in cell units, so the canvas
+   center is a grid vertex and mirror axes run along cell edges.
+---------------------------------------------------------------- */
+const S = { seed: 7, base: 'random', sym: 'quad', flips: new Map() };
+const P = { cell: 56, weight: 0.18, invert: false, guide: false };
+const ck = (i, j) => i + ',' + j;
+
+function hash(i, j, s) {
+  let h = Math.imul(i, 374761393) ^ Math.imul(j, 668265263) ^ Math.imul(s, 2246822519);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) & 1;
+}
+/* map a cell through a symmetry matrix (via its center) */
+function mapCell(m, i, j) {
+  const [a, b] = tf(m, i + 0.5, j + 0.5);
+  return [a - 0.5, b - 0.5];
+}
+function baseOf(i, j) {
+  const mats = MATS[S.sym];
+  // fold the cell into one canonical representative so the whole
+  // field (not just painted cells) obeys the symmetry
+  let best = null, bm = null;
+  for (const m of mats) {
+    const c = mapCell(m, i, j), k = c[0] * 100003 + c[1];
+    if (best === null || k < best.k) { best = { k, i: c[0], j: c[1] }; bm = m; }
+  }
+  const ci = best.i, cj = best.j;
+  let o;
+  switch (S.base) {
+    case 'checker': o = (ci + cj) & 1; break;
+    case 'rings': o = (Math.max(Math.abs(ci + 0.5), Math.abs(cj + 0.5)) | 0) & 1; break;
+    case 'waves': o = Math.sin(ci * 0.55 + Math.sin(cj * 0.35) * 2) > 0 ? 1 : 0; break;
+    case 'solid': o = 0; break;
+    default: o = hash(ci, cj, S.seed);
+  }
+  return o ^ (flipsDiagonal(bm) ? 1 : 0);
+}
+const orient = (i, j) => S.flips.has(ck(i, j)) ? S.flips.get(ck(i, j)) : baseOf(i, j);
+
+function setCell(i, j, o) {
+  for (const m of MATS[S.sym]) {
+    const [a, b] = mapCell(m, i, j);
+    S.flips.set(ck(a, b), o ^ (flipsDiagonal(m) ? 1 : 0));
+  }
+}
+
+/* -------------------------- tile geometry ------------------------
+   Tiles are drawn in a unit cell and mirrored left↔right for
+   orientation 1 (mirroring also reverses each arc's sweep).
+---------------------------------------------------------------- */
+function tilePath(x0, y0, s, o, kind, color) {
+  const X = u => f2(x0 + (o ? 1 - u : u) * s), Y = v => f2(y0 + v * s), r = f2(s / 2);
+  const sw = sweep => o ? 1 - sweep : sweep;
+  if (kind === 'arcs') // two quarter arcs, stroked
+    return `M${X(.5)} ${Y(0)}A${r} ${r} 0 0 ${sw(1)} ${X(0)} ${Y(.5)}` +
+           `M${X(1)} ${Y(.5)}A${r} ${r} 0 0 ${sw(0)} ${X(.5)} ${Y(1)}`;
+  if (kind === 'diag')
+    return `M${X(0)} ${Y(0)}L${X(1)} ${Y(1)}`;
+  // fill: ink either the two corner quarter-discs or the band between them
+  if (color === 'discs')
+    return `M${X(0)} ${Y(0)}L${X(.5)} ${Y(0)}A${r} ${r} 0 0 ${sw(1)} ${X(0)} ${Y(.5)}Z` +
+           `M${X(1)} ${Y(1)}L${X(.5)} ${Y(1)}A${r} ${r} 0 0 ${sw(1)} ${X(1)} ${Y(.5)}Z`;
+  return `M${X(.5)} ${Y(0)}L${X(1)} ${Y(0)}L${X(1)} ${Y(.5)}A${r} ${r} 0 0 ${sw(0)} ${X(.5)} ${Y(1)}` +
+         `L${X(0)} ${Y(1)}L${X(0)} ${Y(.5)}A${r} ${r} 0 0 ${sw(0)} ${X(.5)} ${Y(0)}Z`;
+}
+
+/* visible cell range, optionally shrunk to whole cells for export */
+function cellRange(whole) {
+  const s = P.cell;
+  if (whole) return {
+    i0: Math.ceil(-cx / s), i1: Math.floor((W - cx) / s) - 1,
+    j0: Math.ceil(-cy / s), j1: Math.floor((H - cy) / s) - 1,
+  };
+  return {
+    i0: Math.floor(-cx / s), i1: Math.ceil((W - cx) / s),
+    j0: Math.floor(-cy / s), j1: Math.ceil((H - cy) / s),
+  };
+}
+
+function buildArt(R, ox, oy) {
+  const s = P.cell, V = VARIANTS[current].key;
+  let d = '';
+  for (let j = R.j0; j <= R.j1; j++) for (let i = R.i0; i <= R.i1; i++) {
+    const o = orient(i, j), x0 = cx + i * s - ox, y0 = cy + j * s - oy;
+    if (V === 'A') d += tilePath(x0, y0, s, o, 'arcs');
+    else if (V === 'C') d += tilePath(x0, y0, s, o, 'diag');
+    else {
+      // two-tone Smith tiles: a grid vertex's color is its checker parity;
+      // the corner discs take the color of the vertices they hug
+      const arcVertexParity = ((o ? i + 1 : i) + j) & 1;
+      const inkDiscs = (arcVertexParity === 1) !== P.invert;
+      d += tilePath(x0, y0, s, o, 'fill', inkDiscs ? 'discs' : 'band');
+    }
+  }
+  if (V === 'B') return `<path fill="${C.ink}" d="${d}"/>`;
+  const sw = f2(P.weight * s * (V === 'C' ? 0.7 : 1));
+  return `<path fill="none" stroke="${C.ink}" stroke-width="${sw}" stroke-linecap="${V === 'C' ? 'square' : 'butt'}" d="${d}"/>`;
+}
+
+function render() {
+  const s = P.cell;
+  let html = `<rect width="${W}" height="${H}" fill="${C.paper}"/>`;
+  html += buildArt(cellRange(false), 0, 0);
+  if (P.guide) {
+    let g = '';
+    const R = cellRange(false);
+    for (let i = R.i0; i <= R.i1 + 1; i++) g += `M${cx + i * s} 0V${H}`;
+    for (let j = R.j0; j <= R.j1 + 1; j++) g += `M0 ${cy + j * s}H${W}`;
+    html += `<path d="${g}" stroke="#fff" stroke-opacity=".35" stroke-width="1" style="mix-blend-mode:difference"/>`;
+    const ax = `stroke="#fff" stroke-width="1.5" stroke-dasharray="6 6" style="mix-blend-mode:difference"`;
+    if (['x', 'quad', 'kaleido'].includes(S.sym)) html += `<line x1="${cx}" y1="0" x2="${cx}" y2="${H}" ${ax}/>`;
+    if (['y', 'quad', 'kaleido'].includes(S.sym)) html += `<line x1="0" y1="${cy}" x2="${W}" y2="${cy}" ${ax}/>`;
+  }
+  svg.innerHTML = html;
+  document.getElementById('undo').disabled = !hist.canUndo;
+  document.getElementById('redo').disabled = !hist.canRedo;
+}
+
+function exportSVG(withPaper) {
+  const R = cellRange(true), s = P.cell;
+  if (R.i1 < R.i0 || R.j1 < R.j0) return null;
+  const ox = cx + R.i0 * s, oy = cy + R.j0 * s;
+  const w = (R.i1 - R.i0 + 1) * s, h = (R.j1 - R.j0 + 1) * s;
+  return `<svg xmlns="${NS}" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
+    (withPaper ? `<rect width="${w}" height="${h}" fill="${C.paper}"/>` : '') +
+    buildArt(R, ox, oy) + `</svg>`;
+}
+
+/* ------------------------- undo / storage ---------------------- */
+const serialize = () => JSON.stringify({ seed: S.seed, base: S.base, sym: S.sym, f: [...S.flips] });
+function restore(str) {
+  const d = JSON.parse(str);
+  S.seed = d.seed; S.base = d.base; S.sym = d.sym; S.flips = new Map(d.f);
+  baseEl.value = S.base; symEl.value = S.sym;
+}
+const hist = History(serialize, restore, snap => {
+  try { localStorage.setItem('truchet', snap); } catch {}
+  if (W) render();
+});
+
+/* ----------------------------- input ----------------------------
+   A stroke picks its target orientation from the first cell it
+   touches (the opposite of what's there) and paints every cell it
+   enters with it — so dragging never flickers cells back and forth.
+---------------------------------------------------------------- */
+let painting = false, target = 0, lastCell = null;
+function cellAt(e) {
+  const r = svg.getBoundingClientRect();
+  return [Math.floor((e.clientX - r.left - cx) / P.cell), Math.floor((e.clientY - r.top - cy) / P.cell)];
+}
+svg.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  svg.setPointerCapture(e.pointerId);
+  hist.begin();
+  const [i, j] = cellAt(e);
+  target = 1 - orient(i, j);
+  painting = true; lastCell = ck(i, j);
+  setCell(i, j, target);
+  render();
+});
+svg.addEventListener('pointermove', e => {
+  if (!painting) return;
+  const [i, j] = cellAt(e);
+  if (ck(i, j) === lastCell) return;
+  lastCell = ck(i, j);
+  setCell(i, j, target);
+  render();
+});
+const endPaint = () => { if (painting) { painting = false; hist.commit(); } };
+svg.addEventListener('pointerup', endPaint);
+svg.addEventListener('pointercancel', endPaint);
+
+/* ------------------------------ colors --------------------------
+   Ink & Paper — every tool in this playground is two colors: the
+   mark (ink) and the ground (paper). Both live in the URL so a good
+   combo is a bookmarkable link. Presets are shared playground-wide.
+---------------------------------------------------------------- */
+const PRESETS = [
+  { name: 'Print',     paper: '#ffffff', ink: '#000000' },
+  { name: 'Blueprint', paper: '#0b2447', ink: '#a9d6ff' },
+  { name: 'Riso Red',  paper: '#f7f1e1', ink: '#ff4b2e' },
+  { name: 'Terminal',  paper: '#0a0f0a', ink: '#33ff66' },
+  { name: 'Butter',    paper: '#ffd966', ink: '#33200a' },
+  { name: 'Midnight',  paper: '#000000', ink: '#9d5cff' },
+];
+const C = { ink: '#33200a', paper: '#ffd966' };
+{
+  const q = new URLSearchParams(location.search);
+  for (const k of ['ink', 'paper'])
+    if (/^[0-9a-fA-F]{6}$/.test(q.get(k) || '')) C[k] = '#' + q.get(k);
+}
+const inkEl = document.getElementById('ink'), paperEl = document.getElementById('paper');
+function setColors(ink, paper) {
+  C.ink = ink; C.paper = paper;
+  inkEl.value = ink; paperEl.value = paper;
+  document.body.style.background = paper;
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('ink', ink.slice(1));
+    url.searchParams.set('paper', paper.slice(1));
+    history.replaceState(null, '', url);
+  } catch {}
+  if (W) render();
+}
+inkEl.addEventListener('input', e => setColors(e.target.value, C.paper));
+paperEl.addEventListener('input', e => setColors(C.ink, e.target.value));
+document.getElementById('swap').onclick = () => setColors(C.paper, C.ink);
+for (const p of PRESETS) {
+  const b = document.createElement('button');
+  b.title = p.name;
+  b.innerHTML = `<span style="background:${p.paper}"></span><span style="background:${p.ink}"></span>`;
+  b.onclick = () => setColors(p.ink, p.paper);
+  document.getElementById('presets').appendChild(b);
+}
+
+/* ---------------------------- controls -------------------------- */
+const baseEl = document.getElementById('base'), symEl = document.getElementById('sym');
+// changing base or symmetry is an edit (undoable); painted flips stay
+baseEl.addEventListener('input', e => hist.change(() => { S.base = e.target.value; }));
+symEl.addEventListener('input', e => hist.change(() => { S.sym = e.target.value; }));
+for (const k of ['cell', 'weight'])
+  document.getElementById(k).addEventListener('input', e => { P[k] = +e.target.value; render(); });
+document.getElementById('invert').addEventListener('input', e => { P.invert = e.target.checked; render(); });
+const guideEl = document.getElementById('guide');
+guideEl.addEventListener('input', e => { P.guide = e.target.checked; render(); });
+document.getElementById('undo').onclick = () => hist.undo();
+document.getElementById('redo').onclick = () => hist.redo();
+const shuffle = () => hist.change(() => { S.seed = (Math.random() * 1e9) | 0; S.flips.clear(); S.base = 'random'; baseEl.value = 'random'; });
+document.getElementById('shuffle').onclick = shuffle;
+document.getElementById('clear').onclick = () => hist.change(() => S.flips.clear());
+document.getElementById('collapse').onclick = e => {
+  const p = document.getElementById('panel'), c = p.classList.toggle('collapsed');
+  e.target.textContent = c ? '+' : '–';
+  e.target.setAttribute('aria-expanded', !c);
+};
+wireExport(exportSVG, 'truchet');
+
+/* --------------------------- switcher --------------------------- */
+const VARIANTS = [
+  { key: 'A', name: 'Arcs' },
+  { key: 'B', name: 'Fill' },
+  { key: 'C', name: 'Diagonals' },
+];
+let current = Math.max(0, VARIANTS.findIndex(v =>
+  v.key === new URLSearchParams(location.search).get('variant')));
+
+function setVariant(i) {
+  current = (i + VARIANTS.length) % VARIANTS.length;
+  const v = VARIANTS[current];
+  document.getElementById('label').textContent = `${v.key} — ${v.name}`;
+  document.getElementById('variant-title').textContent = v.name;
+  document.getElementById('weight-wrap').hidden = v.key === 'B';
+  document.getElementById('invert-wrap').hidden = v.key !== 'B';
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('variant', v.key);
+    history.replaceState(null, '', url);
+  } catch {}
+  render();
+}
+document.getElementById('prev').onclick = () => setVariant(current - 1);
+document.getElementById('next').onclick = () => setVariant(current + 1);
+window.addEventListener('keydown', e => {
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? hist.redo() : hist.undo(); return; }
+  if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); hist.redo(); return; }
+  if (mod) return;
+  const k = e.key.toLowerCase();
+  if (e.key === 'ArrowLeft') setVariant(current - 1);
+  else if (e.key === 'ArrowRight') setVariant(current + 1);
+  else if (k === 'm') hist.change(() => { S.sym = SYM_ORDER[(SYM_ORDER.indexOf(S.sym) + 1) % SYM_ORDER.length]; symEl.value = S.sym; });
+  else if (k === 'b') hist.change(() => { const o = [...baseEl.options].map(x => x.value); S.base = o[(o.indexOf(S.base) + 1) % o.length]; baseEl.value = S.base; });
+  else if (k === 'h') { P.guide = !P.guide; guideEl.checked = P.guide; render(); }
+  else if (k === 'r') shuffle();
+});
+
+function resize() {
+  W = window.innerWidth; H = window.innerHeight;
+  cx = Math.round(W / 2); cy = Math.round(H / 2);
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  render();
+}
+window.addEventListener('resize', resize);
+
+try { const saved = localStorage.getItem('truchet'); if (saved) restore(saved); } catch {}
+baseEl.value = S.base; symEl.value = S.sym;
+setColors(C.ink, C.paper);
+resize();
+setVariant(current);
+</script>
+</body>
+</html>
