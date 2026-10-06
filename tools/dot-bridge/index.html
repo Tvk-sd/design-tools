@@ -162,26 +162,15 @@
 <div id="toast" role="status"></div>
 
 <script>
-const svg = document.getElementById('stage');
+/* ================================================================
+   MARK KIT — shared block, copied verbatim across the mark tools
+   (dot-bridge, truchet, contour-rings, l-system, op-art-warp).
+   Symmetry matrices, undo history, toast, and SVG / PNG / clipboard
+   export wired to #svg-out, #png-out, #copy-out and #bg-out.
+   Edit it in one tool, then paste the same block into the others.
+================================================================ */
 const NS = 'http://www.w3.org/2000/svg';
-let W, H, cx, cy;
-
-/* ------------------------------ state ---------------------------
-   The drawing lives in grid units, so spacing/size sliders rescale
-   it live. nodes: "i,j" → size multiplier. edges: "i,j|k,l" (sorted).
-   strokes: the raw freehand drawlines, kept for the guide overlay.
----------------------------------------------------------------- */
-const S = { nodes: new Map(), edges: new Set(), strokes: [] };
-const P = { tool: 'path', sym: 'quad', spacing: 56, dot: 0.46, neck: 0.3, melt: 0.3, guide: true, bgOut: false, fine: false };
-const Q = () => P.fine ? 2 : 1; // snap steps per grid cell
-const snap = v => Math.round(v * Q()) / Q();
-const SIZES = [0.55, 1, 1.5, 2, 2.6, 3.3];
-
-const nk = (i, j) => i + ',' + j;
-const parse = k => k.split(',').map(Number);
-const ek = (a, b) => a < b ? a + '|' + b : b + '|' + a;
-
-/* symmetry as 2×2 integer matrices around grid node (0,0) */
+/* symmetry as 2×2 integer matrices [a,b,c,d]: (x,y) → (ax+by, cx+dy) */
 const MATS = {
   off:  [[1,0,0,1]],
   x:    [[1,0,0,1], [-1,0,0,1]],
@@ -190,7 +179,91 @@ const MATS = {
   kaleido: [[1,0,0,1], [-1,0,0,1], [1,0,0,-1], [-1,0,0,-1],
             [0,1,1,0], [0,-1,1,0], [0,1,-1,0], [0,-1,-1,0]],
 };
+const SYM_ORDER = Object.keys(MATS);
 const tf = (m, x, y) => [m[0] * x + m[1] * y, m[2] * x + m[3] * y];
+/* does m swap the two diagonals of a square? (mirror-like maps do) */
+const flipsDiagonal = m => { const [p, q] = tf(m, 1, 1); return p * q < 0; };
+const f2 = n => +n.toFixed(2);
+
+/* undo history over string snapshots; onChange(snapshot) after every edit */
+function History(snapshot, restore, onChange) {
+  const u = [], r = [];
+  let before = null;
+  return {
+    begin() { before = snapshot(); },
+    commit() {
+      const now = snapshot();
+      if (before !== null && now !== before) {
+        u.push(before); if (u.length > 200) u.shift();
+        r.length = 0;
+      }
+      before = null; onChange(now);
+    },
+    change(fn) { this.begin(); fn(); this.commit(); },
+    undo() { if (!u.length) return; r.push(snapshot()); restore(u.pop()); onChange(snapshot()); },
+    redo() { if (!r.length) return; u.push(snapshot()); restore(r.pop()); onChange(snapshot()); },
+    get canUndo() { return u.length > 0; },
+    get canRedo() { return r.length > 0; },
+  };
+}
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('on');
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('on'), 1800);
+}
+function download(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+/* getSVG(includePaper) → standalone SVG string, or null when empty */
+function wireExport(getSVG, name) {
+  const bg = () => !!document.getElementById('bg-out')?.checked;
+  const need = () => { const s = getSVG(bg()); if (!s) toast('Nothing to export yet'); return s; };
+  document.getElementById('svg-out').onclick = () => {
+    const s = need(); if (s) download(new Blob([s], { type: 'image/svg+xml' }), name + '.svg');
+  };
+  document.getElementById('png-out').onclick = () => {
+    const s = need(); if (!s) return;
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas'), k = 3;
+      c.width = img.width * k; c.height = img.height * k;
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob(b => download(b, name + '.png'));
+    };
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s);
+  };
+  document.getElementById('copy-out').onclick = () => {
+    const s = need(); if (!s) return;
+    navigator.clipboard.writeText(s)
+      .then(() => toast('SVG copied — paste into Figma'))
+      .catch(() => toast('Clipboard blocked — use the SVG button'));
+  };
+}
+/* ======================== end MARK KIT ======================== */
+
+const svg = document.getElementById('stage');
+let W, H, cx, cy;
+
+/* ------------------------------ state ---------------------------
+   The drawing lives in grid units, so spacing/size sliders rescale
+   it live. nodes: "i,j" → size multiplier. edges: "i,j|k,l" (sorted).
+   strokes: the raw freehand drawlines, kept for the guide overlay.
+---------------------------------------------------------------- */
+const S = { nodes: new Map(), edges: new Set(), strokes: [] };
+const P = { tool: 'path', sym: 'quad', spacing: 56, dot: 0.46, neck: 0.3, melt: 0.3, guide: true, fine: false };
+const Q = () => P.fine ? 2 : 1; // snap steps per grid cell
+const snap = v => Math.round(v * Q()) / Q();
+const SIZES = [0.55, 1, 1.5, 2, 2.6, 3.3];
+
+const nk = (i, j) => i + ',' + j;
+const parse = k => k.split(',').map(Number);
+const ek = (a, b) => a < b ? a + '|' + b : b + '|' + a;
+
+/* symmetry (MATS, tf) comes from the MARK KIT, around grid node (0,0) */
 
 function addNode(i, j) {
   for (const m of MATS[P.sym]) {
@@ -262,7 +335,7 @@ function toGrid(e) {
   const r = svg.getBoundingClientRect();
   return [(e.clientX - r.left - cx) / P.spacing, (e.clientY - r.top - cy) / P.spacing];
 }
-let drawing = false, last = null, stroke = null, before = null;
+let drawing = false, last = null, stroke = null;
 
 function visit(g, force) {
   const i = snap(g[0]), j = snap(g[1]);
@@ -288,10 +361,10 @@ function visit(g, force) {
 svg.addEventListener('pointerdown', e => {
   if (e.button !== 0) return;
   svg.setPointerCapture(e.pointerId);
-  before = serialize();
+  hist.begin();
   drawing = true; last = null;
   const g = toGrid(e);
-  if (P.tool === 'grow') { const nd = nearestNode(g, 0.5); if (nd) growNode(nd[0], nd[1], e.shiftKey || e.altKey ? -1 : 1); drawing = false; commit(); }
+  if (P.tool === 'grow') { const nd = nearestNode(g, 0.5); if (nd) growNode(nd[0], nd[1], e.shiftKey || e.altKey ? -1 : 1); drawing = false; hist.commit(); }
   else if (P.tool === 'erase') eraseAt(g[0], g[1]);
   else {
     stroke = { pts: [g], sym: P.sym };
@@ -316,14 +389,12 @@ function endDraw() {
   drawing = false;
   if (stroke && stroke.pts.length < 2) S.strokes.splice(S.strokes.indexOf(stroke), 1);
   stroke = null;
-  commit();
-  render();
+  hist.commit();
 }
 svg.addEventListener('pointerup', endDraw);
 svg.addEventListener('pointercancel', endDraw);
 
 /* ------------------------- undo / storage ---------------------- */
-const undoStack = [], redoStack = [];
 function serialize() {
   return JSON.stringify({ n: [...S.nodes], e: [...S.edges], s: S.strokes });
 }
@@ -331,20 +402,11 @@ function restore(str) {
   const d = JSON.parse(str);
   S.nodes = new Map(d.n); S.edges = new Set(d.e); S.strokes = d.s || [];
 }
-function commit() {
-  const now = serialize();
-  if (before !== null && now !== before) {
-    undoStack.push(before);
-    if (undoStack.length > 200) undoStack.shift();
-    redoStack.length = 0;
-  }
-  before = null;
-  try { localStorage.setItem('dot-bridge', now); } catch {}
-}
-function undo() { if (!undoStack.length) return; redoStack.push(serialize()); restore(undoStack.pop()); save(); render(); }
-function redo() { if (!redoStack.length) return; undoStack.push(serialize()); restore(redoStack.pop()); save(); render(); }
-function save() { try { localStorage.setItem('dot-bridge', serialize()); } catch {} }
-function change(fn) { before = serialize(); fn(); commit(); render(); }
+const hist = History(serialize, restore, snap => {
+  try { localStorage.setItem('dot-bridge', snap); } catch {}
+  if (W) render();
+});
+const change = fn => hist.change(fn);
 
 /* ---------------------------- geometry --------------------------
    A bridge between circles A and B is the region bounded by two
@@ -403,7 +465,6 @@ function bridgePath(ax, ay, ra, bx, by, rb, neck) {
 /* ---------------------------- render ---------------------------- */
 const pos = k => { const [i, j] = parse(k); return [cx + i * P.spacing, cy + j * P.spacing]; };
 const rad = k => P.spacing * P.dot * S.nodes.get(k);
-const f2 = n => +n.toFixed(2);
 
 /* the art itself — identical markup on screen and in exports */
 function buildArt(ox = 0, oy = 0) {
@@ -473,8 +534,8 @@ function render() {
     html += `<g style="mix-blend-mode:difference" pointer-events="none">${g}</g>`;
   }
   svg.innerHTML = html;
-  document.getElementById('undo').disabled = !undoStack.length;
-  document.getElementById('redo').disabled = !redoStack.length;
+  document.getElementById('undo').disabled = !hist.canUndo;
+  document.getElementById('redo').disabled = !hist.canRedo;
 }
 
 /* ----------------------------- export ---------------------------
@@ -482,7 +543,7 @@ function render() {
    circles + paths (select all in Figma → Union for one shape). Goo
    carries its SVG filter, which Figma ignores — use PNG for goo.
 ---------------------------------------------------------------- */
-function exportSVG() {
+function exportSVG(withPaper) {
   if (!S.nodes.size) return null;
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const k of S.nodes.keys()) {
@@ -496,41 +557,10 @@ function exportSVG() {
   const art = buildArt(x0, y0);
   return `<svg xmlns="${NS}" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
     (art.goo ? `<defs>${gooFilter(0, 0, w, h)}</defs>` : '') +
-    (P.bgOut ? `<rect width="${w}" height="${h}" fill="${C.paper}"/>` : '') +
+    (withPaper ? `<rect width="${w}" height="${h}" fill="${C.paper}"/>` : '') +
     art.markup + `</svg>`;
 }
-function download(blob, name) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = name;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-}
-function toast(msg) {
-  const t = document.getElementById('toast');
-  t.textContent = msg; t.classList.add('on');
-  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('on'), 1800);
-}
-document.getElementById('svg-out').onclick = () => {
-  const s = exportSVG(); if (!s) return toast('Draw something first');
-  download(new Blob([s], { type: 'image/svg+xml' }), 'dot-bridge.svg');
-};
-document.getElementById('png-out').onclick = () => {
-  const s = exportSVG(); if (!s) return toast('Draw something first');
-  const img = new Image();
-  img.onload = () => {
-    const c = document.createElement('canvas'), k = 3;
-    c.width = img.width * k; c.height = img.height * k;
-    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-    c.toBlob(b => download(b, 'dot-bridge.png'));
-  };
-  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s);
-};
-document.getElementById('copy-out').onclick = () => {
-  const s = exportSVG(); if (!s) return toast('Draw something first');
-  navigator.clipboard.writeText(s)
-    .then(() => toast('SVG copied — paste into Figma'))
-    .catch(() => toast('Clipboard blocked — use the SVG button'));
-};
+wireExport(exportSVG, 'dot-bridge');
 
 /* ------------------------------ colors --------------------------
    Ink & Paper — every tool in this playground is two colors: the
@@ -593,9 +623,8 @@ function setFine(on) { P.fine = on; fineEl.checked = on; render(); }
 fineEl.addEventListener('input', e => setFine(e.target.checked));
 const guideEl = document.getElementById('guide');
 guideEl.addEventListener('input', e => { P.guide = e.target.checked; render(); });
-document.getElementById('bg-out').addEventListener('input', e => { P.bgOut = e.target.checked; });
-document.getElementById('undo').onclick = undo;
-document.getElementById('redo').onclick = redo;
+document.getElementById('undo').onclick = () => hist.undo();
+document.getElementById('redo').onclick = () => hist.redo();
 document.getElementById('clear').onclick = () => change(() => { S.nodes.clear(); S.edges.clear(); S.strokes = []; });
 document.getElementById('shuffle').onclick = () => change(shuffle);
 document.getElementById('collapse').onclick = e => {
@@ -666,8 +695,8 @@ document.getElementById('next').onclick = () => setVariant(current + 1);
 window.addEventListener('keydown', e => {
   if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
   const mod = e.metaKey || e.ctrlKey;
-  if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
-  if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
+  if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? hist.redo() : hist.undo(); return; }
+  if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); hist.redo(); return; }
   if (mod) return;
   const k = e.key.toLowerCase();
   if (e.key === 'ArrowLeft') setVariant(current - 1);
