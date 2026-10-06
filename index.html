@@ -101,6 +101,16 @@
         </div>
       </a>
     </li>
+    <li>
+      <a class="tool" href="tools/truchet/index.html" data-preview="truchet"
+         style="--paper:#ffd966; --ink:#33200a;">
+        <canvas aria-hidden="true"></canvas>
+        <div class="txt">
+          <strong>Truchet Tiler</strong>
+          <span>Paint a grid of two-way tiles into mazes, worms and blobs — arcs, two-tone fill or diagonals, with symmetry.</span>
+        </div>
+      </a>
+    </li>
     <!-- Add the next tool here: copy a tools/<name>/index.html, one <li>,
          and a mini preview in the PREVIEWS map below -->
   </ul>
@@ -369,6 +379,42 @@ const PREVIEWS = {
         }
       },
       warm() { for (let i = 0; i < 5; i++) stepSnake(); this.step(0); },
+    };
+  },
+  truchet(ctx, duo, getCur) {
+    // two-tone Smith tiles; one random tile flips every few frames,
+    // and the tile under the cursor keeps flipping while hovered
+    const N = 6, s = SZ / N;
+    const o = Array.from({ length: N * N }, () => Math.random() < 0.5 ? 1 : 0);
+    let acc = 0, lastT = 0, hovered = -1;
+    const draw = () => {
+      ctx.fillStyle = duo.paper; ctx.fillRect(0, 0, SZ, SZ);
+      ctx.fillStyle = duo.ink;
+      for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+        const t = o[j * N + i], x0 = i * s, y0 = j * s, r = s / 2;
+        const X = u => x0 + (t ? 1 - u : u) * s;
+        const discs = (((t ? i + 1 : i) + j) & 1) === 1;
+        ctx.save();
+        ctx.beginPath(); ctx.rect(x0, y0, s, s); ctx.clip();
+        ctx.fillStyle = discs ? duo.paper : duo.ink; ctx.fillRect(x0, y0, s, s);
+        ctx.fillStyle = discs ? duo.ink : duo.paper;
+        ctx.beginPath();
+        ctx.arc(X(0), y0, r, 0, Math.PI * 2);
+        ctx.moveTo(X(1) + r, y0 + s); ctx.arc(X(1), y0 + s, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    };
+    return {
+      step(t) {
+        acc += t - lastT; lastT = t;
+        const cur = getCur();
+        const h = cur ? Math.min(N - 1, Math.max(0, cur.y / s | 0)) * N + Math.min(N - 1, Math.max(0, cur.x / s | 0)) : -1;
+        if (h !== hovered) { hovered = h; if (h >= 0) o[h] ^= 1; }
+        if (acc > 0.35) { acc = 0; o[Math.random() * o.length | 0] ^= 1; }
+        draw();
+      },
+      warm() { draw(); },
     };
   },
 };

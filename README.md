@@ -36,3 +36,8 @@ Every tool shares the same two-color system: **ink** (the mark) and **paper** (t
 - **reaction-diffusion** — Gray-Scott simulation, upscaled from a small buffer. 3 regimes (`?variant=A|B|C`): coral, mitosis, maze — switching sets the feed/kill sliders, then drift them yourself. Drag to paint chemical, `R` reseeds.
 - **physics-type** — letters as verlet bodies you grab and throw. 3 setups (`?variant=A|B|C`): springs home, hanging chain, gravity pit. `R` resets the layout.
 - **dot-bridge** — draw on a dot grid; the drawline snaps to grid points and becomes circles joined by smooth concave necks (metaball marks). 3 joint styles (`?variant=A|B|C`): bridges (exact vector fillets), goo (blur-melt), pills. Tools: Path / Dots / Grow / Erase (`P D G E`), symmetry off / mirror / quad / kaleido (`M`), half-step grid for offset positions (`F`), `R` shuffles a random mark, `⌘Z` undo. Export SVG / PNG, or Copy and paste into Figma (select all → Union).
+- **truchet** — paint a grid of two-way Smith tiles into mazes, worms and blobs. 3 tile sets (`?variant=A|B|C`): arcs, two-tone fill (the melting look), diagonals (10 PRINT). Base patterns random / checker / rings / waves / solid (`B`), symmetry (`M`), `R` reshuffles. Export SVG / PNG / Copy for Figma.
+
+## Mark kit
+
+The mark-family tools (dot-bridge, truchet, contour-rings, l-system, op-art-warp) share one script block, **MARK KIT**: symmetry matrices, undo history, toast, and SVG / PNG / clipboard export. It is copied verbatim into each tool (same rule as Ink & Paper). Change it in one tool, then paste the identical block into the others.
