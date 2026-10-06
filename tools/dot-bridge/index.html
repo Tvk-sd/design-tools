@@ -125,6 +125,7 @@
     <label>Dot size <input type="range" id="dot" min="0.2" max="0.75" step="0.01" value="0.46" /></label>
     <label>Neck <input type="range" id="neck" min="0.05" max="0.95" step="0.01" value="0.3" /></label>
     <label id="melt-wrap">Melt <input type="range" id="melt" min="0.05" max="0.8" step="0.01" value="0.3" /></label>
+    <label class="check"><input type="checkbox" id="fine" /> Half-step grid (offset positions)</label>
     <label class="check"><input type="checkbox" id="guide" checked /> Show guide (grid + drawline)</label>
     <label>Colors — ink ⇄ paper</label>
     <div class="swatches">
@@ -149,7 +150,7 @@
     <label class="check"><input type="checkbox" id="bg-out" /> Include paper in export</label>
     <div class="hint">
       drag on the grid to draw · <kbd>P D G E</kbd> tools · <kbd>M</kbd> symmetry ·
-      <kbd>H</kbd> guide · <kbd>R</kbd> shuffle · <kbd>⌘Z</kbd> undo ·
+      <kbd>F</kbd> half-step · <kbd>H</kbd> guide · <kbd>R</kbd> shuffle · <kbd>⌘Z</kbd> undo ·
       Copy → paste in Figma, select all → Union
     </div>
   </div>
@@ -171,7 +172,9 @@ let W, H, cx, cy;
    strokes: the raw freehand drawlines, kept for the guide overlay.
 ---------------------------------------------------------------- */
 const S = { nodes: new Map(), edges: new Set(), strokes: [] };
-const P = { tool: 'path', sym: 'quad', spacing: 56, dot: 0.46, neck: 0.3, melt: 0.3, guide: true, bgOut: false };
+const P = { tool: 'path', sym: 'quad', spacing: 56, dot: 0.46, neck: 0.3, melt: 0.3, guide: true, bgOut: false, fine: false };
+const Q = () => P.fine ? 2 : 1; // snap steps per grid cell
+const snap = v => Math.round(v * Q()) / Q();
 const SIZES = [0.55, 1, 1.5, 2, 2.6, 3.3];
 
 const nk = (i, j) => i + ',' + j;
@@ -217,6 +220,14 @@ function growNode(i, j, dir) {
     if (S.nodes.has(k)) S.nodes.set(k, next);
   }
 }
+function nearestNode(g, maxD) {
+  let best = null, bd = maxD;
+  for (const k of S.nodes.keys()) {
+    const [i, j] = parse(k), d = Math.hypot(g[0] - i, g[1] - j);
+    if (d < bd) { bd = d; best = [i, j]; }
+  }
+  return best;
+}
 function segDist(px, py, ax, ay, bx, by) {
   const dx = bx - ax, dy = by - ay;
   const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy || 1)));
@@ -227,14 +238,14 @@ function eraseAt(gx, gy) {
     const [x, y] = tf(m, gx, gy);
     for (const k of [...S.nodes.keys()]) {
       const [i, j] = parse(k);
-      if (Math.hypot(x - i, y - j) < 0.5) {
+      if (Math.hypot(x - i, y - j) < 0.5 / Q()) {
         S.nodes.delete(k);
         for (const e of [...S.edges]) if (e.split('|').includes(k)) S.edges.delete(e);
       }
     }
     for (const e of [...S.edges]) {
       const [a, b] = e.split('|').map(parse);
-      if (segDist(x, y, a[0], a[1], b[0], b[1]) < 0.28) S.edges.delete(e);
+      if (segDist(x, y, a[0], a[1], b[0], b[1]) < 0.28 / Q()) S.edges.delete(e);
     }
     S.strokes = S.strokes.filter(st => !MATS[st.sym].some(sm =>
       st.pts.some(p => { const q = tf(sm, p[0], p[1]); return Math.hypot(q[0] - x, q[1] - y) < 0.4; })));
@@ -254,15 +265,19 @@ function toGrid(e) {
 let drawing = false, last = null, stroke = null, before = null;
 
 function visit(g, force) {
-  const i = Math.round(g[0]), j = Math.round(g[1]);
-  if (!force && Math.hypot(g[0] - i, g[1] - j) > 0.42) return;
+  const i = snap(g[0]), j = snap(g[1]);
+  if (!force && Math.hypot(g[0] - i, g[1] - j) > 0.42 / Q()) return;
   if (last && last[0] === i && last[1] === j) return;
   if (!last) addNode(i, j);
   else {
-    const di = i - last[0], dj = j - last[1], n = Math.max(Math.abs(di), Math.abs(dj));
+    const q = Q(), di = i - last[0], dj = j - last[1];
+    // half-step grid keeps the one-cell rhythm: positions get finer, not denser
+    const dist = Math.hypot(di, dj);
+    if (P.fine && dist < 0.7) return;
+    const n = P.fine ? Math.max(1, Math.round(dist)) : Math.round(Math.max(Math.abs(di), Math.abs(dj)) * q);
     let prev = last;
     for (let s = 1; s <= n; s++) {
-      const p = [last[0] + Math.round(di * s / n), last[1] + Math.round(dj * s / n)];
+      const p = [last[0] + Math.round(di * q * s / n) / q, last[1] + Math.round(dj * q * s / n) / q];
       if (P.tool === 'path') addEdge(prev, p); else addNode(p[0], p[1]);
       prev = p;
     }
@@ -276,7 +291,7 @@ svg.addEventListener('pointerdown', e => {
   before = serialize();
   drawing = true; last = null;
   const g = toGrid(e);
-  if (P.tool === 'grow') { growNode(Math.round(g[0]), Math.round(g[1]), e.shiftKey || e.altKey ? -1 : 1); drawing = false; commit(); }
+  if (P.tool === 'grow') { const nd = nearestNode(g, 0.5); if (nd) growNode(nd[0], nd[1], e.shiftKey || e.altKey ? -1 : 1); drawing = false; commit(); }
   else if (P.tool === 'erase') eraseAt(g[0], g[1]);
   else {
     stroke = { pts: [g], sym: P.sym };
@@ -425,7 +440,12 @@ function render() {
   let html = `<rect width="${W}" height="${H}" fill="${C.paper}"/>`;
   html += `<defs>${gooFilter(0, 0, W, H)}`;
   html += `<pattern id="grid" width="${sp}" height="${sp}" patternUnits="userSpaceOnUse" x="${f2(cx - sp / 2)}" y="${f2(cy - sp / 2)}">` +
-          `<circle cx="${sp / 2}" cy="${sp / 2}" r="1.3" fill="${C.ink}" fill-opacity=".28"/></pattern></defs>`;
+          `<circle cx="${sp / 2}" cy="${sp / 2}" r="1.3" fill="${C.ink}" fill-opacity=".28"/>` +
+          (P.fine ? `<circle cx="0" cy="0" r="1" fill="${C.ink}" fill-opacity=".18"/><circle cx="${sp}" cy="0" r="1" fill="${C.ink}" fill-opacity=".18"/>` +
+                    `<circle cx="0" cy="${sp}" r="1" fill="${C.ink}" fill-opacity=".18"/><circle cx="${sp}" cy="${sp}" r="1" fill="${C.ink}" fill-opacity=".18"/>` +
+                    `<circle cx="${sp / 2}" cy="0" r="1" fill="${C.ink}" fill-opacity=".18"/><circle cx="${sp / 2}" cy="${sp}" r="1" fill="${C.ink}" fill-opacity=".18"/>` +
+                    `<circle cx="0" cy="${sp / 2}" r="1" fill="${C.ink}" fill-opacity=".18"/><circle cx="${sp}" cy="${sp / 2}" r="1" fill="${C.ink}" fill-opacity=".18"/>` : '') +
+          `</pattern></defs>`;
   if (P.guide) {
     html += `<rect width="${W}" height="${H}" fill="url(#grid)"/>`;
     const ax = `stroke="${C.ink}" stroke-opacity=".14" stroke-dasharray="4 6"`;
@@ -568,6 +588,9 @@ function setSym(s) { P.sym = s; symEl.value = s; render(); }
 symEl.addEventListener('input', e => setSym(e.target.value));
 for (const k of ['spacing', 'dot', 'neck', 'melt'])
   document.getElementById(k).addEventListener('input', e => { P[k] = +e.target.value; render(); });
+const fineEl = document.getElementById('fine');
+function setFine(on) { P.fine = on; fineEl.checked = on; render(); }
+fineEl.addEventListener('input', e => setFine(e.target.checked));
 const guideEl = document.getElementById('guide');
 guideEl.addEventListener('input', e => { P.guide = e.target.checked; render(); });
 document.getElementById('bg-out').addEventListener('input', e => { P.bgOut = e.target.checked; });
@@ -654,6 +677,7 @@ window.addEventListener('keydown', e => {
   else if (k === 'g') setTool('grow');
   else if (k === 'e') setTool('erase');
   else if (k === 'm') { const o = Object.keys(MATS); setSym(o[(o.indexOf(P.sym) + 1) % o.length]); }
+  else if (k === 'f') setFine(!P.fine);
   else if (k === 'h') { P.guide = !P.guide; guideEl.checked = P.guide; render(); }
   else if (k === 'r') change(shuffle);
 });
