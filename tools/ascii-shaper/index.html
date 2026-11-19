@@ -1,0 +1,1120 @@
+<!doctype html>
+<!--
+  ASCII Shaper — tool #6 of the Design Tools playground.
+  Any picture — a procedural field, typed words, a dropped image or video,
+  the webcam — redrawn in monospace characters. Glyphs are picked by their
+  shape, not just their brightness, so edges stay sharp. Three renderers,
+  switchable via ?variant= / the bottom bar / arrow keys.
+  Exports a PNG, an SVG with live text, or a seamless video loop.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ASCII Shaper — prototype</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #000; overflow: hidden; font-family: ui-sans-serif, system-ui, sans-serif; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; touch-action: none; }
+  body.boxed canvas { outline: 1px solid #2a2a2a; }
+
+  /* control panel */
+  #panel {
+    position: fixed; top: 16px; left: 16px; z-index: 10;
+    background: rgba(20,20,20,.85); color: #eee; padding: 14px 16px;
+    border-radius: 10px; font-size: 12px; width: 236px;
+    max-height: calc(100% - 92px); overflow-y: auto;   /* stops short of the switcher */
+    backdrop-filter: blur(6px);
+  }
+  #panel .head { display: flex; align-items: center; justify-content: space-between; }
+  #panel .head button {
+    width: 22px; height: 22px; margin: -4px -6px -4px 0; padding: 0; border: 0; border-radius: 6px;
+    background: none; color: #999; font-size: 16px; line-height: 1; cursor: pointer;
+  }
+  #panel .head button:hover { color: #eee; background: #2a2a2a; }
+  #panel label { display: block; margin-top: 10px; color: #999; }
+  #panel input[type=range] { width: 100%; }
+  #panel input[type=text], #panel select {
+    width: 100%; margin-top: 4px; padding: 4px 6px; border-radius: 6px;
+    border: 1px solid #444; background: #111; color: #eee; font-size: 12px;
+  }
+  #panel input.mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  #panel .check { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: #999; }
+  #panel .check input { margin: 0; }
+  #panel .hint { margin-top: 10px; color: #777; line-height: 1.45; }
+  #panel [hidden] { display: none !important; }
+
+  /* this tool has more dials than its siblings, so sliders sit beside their label */
+  #panel label.row { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+  #panel label.row span { flex: 0 0 58px; }
+  #panel label.row input { flex: 1; min-width: 0; }
+
+  /* segmented choices: source, scene, format, export */
+  #panel .seg { display: flex; margin-top: 4px; border: 1px solid #444; border-radius: 6px; overflow: hidden; }
+  #panel .seg + .seg, #panel .seg + input[type=text] { margin-top: 6px; }
+  #panel .seg button {
+    flex: 1; padding: 5px 0; border: 0; border-left: 1px solid #444;
+    background: #111; color: #999; font-size: 11px; cursor: pointer;
+  }
+  #panel .seg button:first-child { border-left: 0; }
+  #panel .seg button:hover { color: #eee; }
+  #panel .seg button[aria-pressed=true] { background: #eee; color: #000; }
+  #panel .seg.act button { color: #eee; }
+  #panel .seg.act button:hover { background: #2a2a2a; }
+  #panel .seg.act button.busy { background: #ff4b2e; color: #000; }
+  #panel :focus-visible { outline: 2px solid #9d5cff; outline-offset: 1px; }
+
+  /* ink & paper — shared color block, identical across tools */
+  #panel .swatches { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+  #panel .swatches input[type=color] {
+    flex: 1; height: 26px; padding: 1px; border: 1px solid #444;
+    border-radius: 6px; background: #111; cursor: pointer;
+  }
+  #panel .swatches button {
+    border: 1px solid #444; background: #111; color: #eee;
+    border-radius: 6px; height: 26px; width: 30px; cursor: pointer;
+  }
+  #panel .presets { display: flex; gap: 5px; margin-top: 8px; }
+  #panel .presets button {
+    flex: 1; height: 16px; padding: 0; border: 1px solid #444; border-radius: 4px;
+    overflow: hidden; display: flex; cursor: pointer; background: none;
+  }
+  #panel .presets span { flex: 1; }
+
+  /* H folds the chrome away: the panel shrinks to its toggle, the switcher goes */
+  body.bare #panel { width: auto; padding: 8px 12px; overflow: hidden; }
+  body.bare #panel > :not(.head), body.bare #variant-title, body.bare #switcher { display: none; }
+  body.bare #panel .head button { margin: -4px -6px; }
+
+  /* prototype switcher — deliberately NOT styled like the design being judged */
+  #switcher {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 10;
+    display: flex; align-items: center; gap: 12px;
+    background: #fff; color: #000; border-radius: 999px; padding: 8px 16px;
+    font-size: 13px; font-weight: 600; box-shadow: 0 4px 20px rgba(0,0,0,.5);
+    user-select: none;
+  }
+  #switcher button {
+    border: 0; background: none; font-size: 16px; cursor: pointer; padding: 2px 6px;
+  }
+  #switcher span { min-width: 180px; text-align: center; }
+
+  /* drop highlight */
+  body.dragging::after {
+    content: 'drop image or video';
+    position: fixed; inset: 12px; z-index: 20;
+    display: flex; align-items: center; justify-content: center;
+    border: 2px dashed #fff; border-radius: 16px;
+    background: rgba(0,0,0,.6); color: #fff;
+    font-size: 24px; font-weight: 700; letter-spacing: .1em;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="panel">
+  <div class="head">
+    <strong id="variant-title"></strong>
+    <button id="fold" title="Hide or show the panel (H)" aria-label="Hide or show the panel">–</button>
+  </div>
+
+  <!-- A · Shape -->
+  <div data-v="A">
+    <label for="charset">Characters</label>
+    <select id="charset"></select>
+    <input type="text" id="chars" class="mono" spellcheck="false" autocomplete="off" aria-label="Characters to draw with" />
+    <label class="row"><span>Edge</span><input type="range" id="edge" min="0" max="1" step="0.01" value="0.5" /></label>
+    <label class="row"><span>Grain</span><input type="range" id="grain" min="0" max="1" step="0.01" value="0.3" /></label>
+  </div>
+  <!-- B · Contour -->
+  <div data-v="B">
+    <label class="row"><span>Levels</span><input type="range" id="levels" min="2" max="16" step="1" value="7" /></label>
+    <label class="row"><span>Smooth</span><input type="range" id="smooth" min="0" max="4" step="1" value="1" /></label>
+  </div>
+  <!-- C · Words -->
+  <div data-v="C">
+    <label for="words">Words</label>
+    <input type="text" id="words" class="mono" spellcheck="false" autocomplete="off" value="HELLO WORLD " />
+    <label class="row"><span>Swell</span><input type="range" id="swell" min="0" max="1" step="0.01" value="0.45" /></label>
+  </div>
+
+  <label>Source</label>
+  <div class="seg" id="source" role="group" aria-label="Source">
+    <button data-k="field">Field</button><button data-k="type">Type</button><button data-k="image">Image</button><button data-k="camera">Camera</button>
+  </div>
+  <div class="seg" id="scene" data-s="field" role="group" aria-label="Field scene">
+    <button data-k="lava">Lava</button><button data-k="marble">Marble</button><button data-k="ripple">Ripple</button>
+  </div>
+  <input type="text" id="text" data-s="type" value="HELLO WORLD" autocomplete="off" aria-label="Text to render" />
+
+  <label class="row"><span>Size</span><input type="range" id="size" min="8" max="48" step="1" value="13" /></label>
+  <label class="row"><span>Contrast</span><input type="range" id="contrast" min="0.4" max="3" step="0.05" value="1.15" /></label>
+  <label class="row"><span>Exposure</span><input type="range" id="exposure" min="-1" max="1" step="0.02" value="0" /></label>
+  <label class="row"><span>Speed</span><input type="range" id="speed" min="0" max="3" step="0.05" value="1" /></label>
+  <label class="check"><input type="checkbox" id="invert" /> Invert</label>
+
+  <label>Colors — ink ⇄ paper</label>
+  <div class="swatches">
+    <input type="color" id="ink" value="#000000" title="Ink" />
+    <button id="swap" title="Swap ink and paper">⇄</button>
+    <input type="color" id="paper" value="#ffffff" title="Paper" />
+  </div>
+  <div class="presets" id="presets"></div>
+
+  <label>Format</label>
+  <div class="seg" id="format" role="group" aria-label="Format">
+    <button data-k="full">Full</button><button data-k="1:1">1:1</button><button data-k="4:5">4:5</button><button data-k="9:16">9:16</button><button data-k="16:9">16:9</button>
+  </div>
+
+  <label>Export</label>
+  <div class="seg act" role="group" aria-label="Export">
+    <button id="png" title="High-resolution still">PNG</button><button id="svg" title="Vector, with live text">SVG</button><button id="loop" title="Record a video loop">Loop</button>
+  </div>
+  <input type="file" id="file" accept="image/*,video/*" hidden />
+  <div class="hint" id="hint" aria-live="polite"></div>
+</div>
+
+<div id="switcher">
+  <button id="prev">←</button><span id="label"></span><button id="next">→</button>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const $ = id => document.getElementById(id);
+const TAU = Math.PI * 2;
+const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+
+const MONO = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace';
+const SANS = 'ui-sans-serif, system-ui, "Helvetica Neue", Arial, sans-serif';
+const font = px => `700 ${px}px ${MONO}`;
+const LEAD = 1.1;         // cell height in ems — tight, so dark areas really get dark
+const SX = 2, SY = 3;     // brightness samples per cell: a 2×3 grid → one 6-D "shape" per cell
+const LOOP = 12;          // seconds per animation cycle at speed 1 — everything procedural is periodic
+
+// sine from a table: the fields evaluate hundreds of thousands per frame
+const SIN = new Float32Array(4096);
+for (let i = 0; i < 4096; i++) SIN[i] = Math.sin(i / 4096 * TAU);
+const sn = x => SIN[(x * 651.8986469) & 4095];
+
+// live params from the panel
+const P = {
+  size: 13, contrast: 1.15, exposure: 0, speed: 1, invert: false,
+  edge: 0.5, grain: 0.3,                    // A
+  levels: 7, smooth: 1,                     // B
+  words: 'HELLO WORLD ', swell: 0.45,       // C
+  chars: '', text: 'HELLO WORLD',
+  source: 'field', scene: 'lava', format: 'full',
+};
+let dirty = true;         // something changed → redraw even when nothing animates
+let paused = false;
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+if (reducedMotion) { P.speed = 0; $('speed').value = 0; }
+
+/* ------------------------------ colors --------------------------
+   Ink & Paper — every tool in this playground is two colors: the
+   mark (ink) and the ground (paper). Both live in the URL so a good
+   combo is a bookmarkable link. Presets are shared playground-wide.
+---------------------------------------------------------------- */
+const PRESETS = [
+  { name: 'Print',     paper: '#ffffff', ink: '#000000' },
+  { name: 'Blueprint', paper: '#0b2447', ink: '#a9d6ff' },
+  { name: 'Riso Red',  paper: '#f7f1e1', ink: '#ff4b2e' },
+  { name: 'Terminal',  paper: '#0a0f0a', ink: '#33ff66' },
+  { name: 'Butter',    paper: '#ffd966', ink: '#33200a' },
+  { name: 'Midnight',  paper: '#000000', ink: '#9d5cff' },
+];
+const C = { ink: '#000000', paper: '#ffffff' };
+{
+  const q = new URLSearchParams(location.search);
+  for (const k of ['ink', 'paper'])
+    if (/^[0-9a-fA-F]{6}$/.test(q.get(k) || '')) C[k] = '#' + q.get(k);
+}
+const inkEl = $('ink'), paperEl = $('paper');
+function setColors(ink, paper) {
+  C.ink = ink; C.paper = paper;
+  inkEl.value = ink; paperEl.value = paper;
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('ink', ink.slice(1));
+    url.searchParams.set('paper', paper.slice(1));
+    history.replaceState(null, '', url);
+  } catch {}
+  dirty = true;
+}
+inkEl.addEventListener('input', e => setColors(e.target.value, C.paper));
+paperEl.addEventListener('input', e => setColors(C.ink, e.target.value));
+$('swap').onclick = () => setColors(C.paper, C.ink);
+for (const p of PRESETS) {
+  const b = document.createElement('button');
+  b.title = p.name;
+  b.innerHTML = `<span style="background:${p.paper}"></span><span style="background:${p.ink}"></span>`;
+  b.onclick = () => setColors(p.ink, p.paper);
+  $('presets').appendChild(b);
+}
+setColors(C.ink, C.paper);
+
+/* ----------------------------- glyphs ---------------------------
+   The heart of the tool. Every character is drawn once, big, and its
+   ink is measured in the same 2×3 regions the picture gets sampled
+   in. That gives each glyph two things: a tone (how much ink overall)
+   and a shape (where the ink sits) — "/" leans top-right and
+   bottom-left, "_" lies along the bottom, "#" is everywhere.
+   Flat areas of the picture are matched on tone alone, so they read
+   as a clean ramp; cells with an edge in them are matched on shape
+   too, which is what lets a diagonal become a slash.
+---------------------------------------------------------------- */
+const CHARSETS = [
+  ['Classic',  ' .\'`,:;-_~^"+=*/\\|()[]<>!?#%&@$'],
+  ['Full ASCII', ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~'],
+  ['Minimal',  ' .:-=+*#%@'],
+  ['Letters',  ' ABCDEFGHIJKLMNOPQRSTUVWXYZ'],
+  ['Binary',   ' 01'],
+  ['Blocks',   ' ░▒▓█▀▄▌▐▖▗▘▝▚▞'],
+];
+let GLY;   // the active set, sorted light → dark: { n, code, tone, dev, start, gap, uniform }
+
+function measureGlyphs(str) {
+  const set = [...new Set([' ', ...str])].filter(ch => ch.length === 1 && ch >= ' ').slice(0, 255);
+  const R = 48;
+  const g = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  g.font = font(R);
+  const cw = g.measureText('M').width, ch = R * LEAD, base = ch / 2 + capLift(g);
+  const pw = Math.ceil(cw), ph = Math.ceil(ch);
+  g.canvas.width = pw; g.canvas.height = ph;
+  g.font = font(R); g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+
+  // which of the six regions each pixel falls in, and how many pixels each has
+  const region = new Uint8Array(pw * ph), count = new Float32Array(6);
+  for (let y = 0; y < ph; y++) for (let x = 0; x < pw; x++) {
+    const k = Math.min(SY - 1, Math.floor(y / ch * SY)) * SX + Math.min(SX - 1, Math.floor(x / cw * SX));
+    region[y * pw + x] = k; count[k]++;
+  }
+
+  const n = set.length, raw = new Float32Array(n * 6), ink = new Float32Array(n);
+  let uniform = true, inkMax = 0;
+  for (let k = 0; k < n; k++) {
+    if (Math.abs(g.measureText(set[k]).width - cw) > 0.05) uniform = false;
+    g.clearRect(0, 0, pw, ph);
+    g.fillText(set[k], cw / 2, base);
+    const a = g.getImageData(0, 0, pw, ph).data;
+    for (let i = 0; i < region.length; i++) raw[k * 6 + region[i]] += a[i * 4 + 3];
+    for (let j = 0; j < 6; j++) { raw[k * 6 + j] /= count[j] * 255; ink[k] += raw[k * 6 + j] / 6; }
+    inkMax = Math.max(inkMax, ink[k]);
+  }
+  // no glyph is solid ink, so stretch every region to span 0..1 before
+  // comparing shapes — a dark cell should reach for the fullest glyph
+  for (let j = 0; j < 6; j++) {
+    let mx = 0;
+    for (let k = 0; k < n; k++) mx = Math.max(mx, raw[k * 6 + j]);
+    if (mx > 0) for (let k = 0; k < n; k++) raw[k * 6 + j] /= mx;
+  }
+
+  const order = [...ink.keys()].sort((p, q) => ink[p] - ink[q]);
+  const code = new Uint16Array(n), tone = new Float32Array(n), dev = new Float32Array(n * 6);
+  order.forEach((k, o) => {
+    code[o] = set[k].charCodeAt(0);
+    tone[o] = inkMax ? ink[k] / inkMax : 0;       // densest glyph = 1
+    let mean = 0;
+    for (let j = 0; j < 6; j++) mean += raw[k * 6 + j] / 6;
+    for (let j = 0; j < 6; j++) dev[o * 6 + j] = raw[k * 6 + j] - mean;   // shape = where it differs from flat
+  });
+  // per tone 0..255: the nearest glyph to start a search from, and how far
+  // apart its neighbours on the ramp are (the reach a dither needs there)
+  const start = new Uint8Array(256), gap = new Float32Array(256);
+  for (let i = 0, hi = 0; i < 256; i++) {
+    const t = i / 255;
+    while (hi < n - 1 && tone[hi] < t) hi++;
+    const lo = Math.max(0, hi - 1);
+    start[i] = t - tone[lo] < tone[hi] - t ? lo : hi;
+    gap[i] = Math.max(0.01, tone[hi] - tone[lo]);
+  }
+  return { n, code, tone, dev, start, gap, uniform };
+}
+// baseline offset that centres a capital on a point — symbols and caps
+// share that middle, so ink ends up balanced between a cell's top and bottom
+function capLift(g) {
+  const m = g.measureText('H');
+  return (m.actualBoundingBoxAscent || parseFloat(g.font.match(/([\d.]+)px/)[1]) * 0.72) / 2;
+}
+function setChars(str) {
+  P.chars = str || CHARSETS[0][1];
+  GLY = measureGlyphs(P.chars);
+  dirty = true;
+}
+
+/* ----------------------------- layout ---------------------------
+   The artboard is the window, or a fixed ratio centred in it. The
+   font size sets the cell; the cell sets the grid; the grid sets the
+   sample buffer (SX×SY brightness samples behind every character).
+---------------------------------------------------------------- */
+const FORMATS = { full: 0, '1:1': 1, '4:5': 4 / 5, '9:16': 9 / 16, '16:9': 16 / 9 };
+let W, H, dpr;
+let cellW, cellH, cols, rows, ox, oy, lift;
+let sw, sh;
+let D;      // sw×sh darkness samples, 0 = paper … 1 = ink
+let M, T;   // per-cell mean darkness + scratch
+let CH;     // per-cell character code (Shape, Contour)
+let SC;     // per-cell glyph scale (Words)
+
+function layout() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const ratio = FORMATS[P.format];
+  if (!ratio) { W = window.innerWidth; H = window.innerHeight; }
+  else {
+    const aw = Math.max(120, window.innerWidth - 48), ah = Math.max(120, window.innerHeight - 48);
+    W = Math.round(Math.min(aw, ah * ratio)); H = Math.round(W / ratio);
+  }
+  document.body.classList.toggle('boxed', !!ratio);
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+
+  ctx.font = font(P.size);
+  cellW = ctx.measureText('M').width; cellH = P.size * LEAD;
+  lift = capLift(ctx);
+  cols = Math.ceil(W / cellW); rows = Math.ceil(H / cellH);
+  ox = (W - cols * cellW) / 2; oy = (H - rows * cellH) / 2;
+  sw = cols * SX; sh = rows * SY;
+  D = new Float32Array(sw * sh);
+  M = new Float32Array(cols * rows); T = new Float32Array(cols * rows);
+  CH = new Uint16Array(cols * rows).fill(32);
+  SC = new Float32Array(cols * rows);
+  textRaster = null;
+  dirty = true;
+}
+
+/* ----------------------------- sources --------------------------
+   Every source does one thing: fill D with raw darkness. Procedural
+   ones take the loop phase 0..1 and only ever use whole multiples of
+   it, so the last frame of a cycle meets the first — a recorded loop
+   is seamless.
+---------------------------------------------------------------- */
+
+// run fn over every sample with x,y in units where the short side spans -1..1
+function eachSample(fn) {
+  const gw = cols * cellW, gh = rows * cellH, half = Math.min(gw, gh) / 2;
+  const hx = cellW / SX / half, hy = cellH / SY / half;
+  const x0 = -gw / 2 / half + hx / 2, y0 = -gh / 2 / half + hy / 2;
+  for (let j = 0, i = 0; j < sh; j++) {
+    const y = y0 + j * hy;
+    for (let k = 0; k < sw; k++, i++) D[i] = fn(x0 + k * hx, y);
+  }
+}
+const extent = () => {
+  const gw = cols * cellW, gh = rows * cellH, half = Math.min(gw, gh) / 2;
+  return { ax: gw / 2 / half, ay: gh / 2 / half, h: (cellW / SX + cellH / SY) / 2 / half };
+};
+
+/* LAVA — metaballs lit like domes. With a field of r²/d² per blob, a lone
+   blob's 1/F is exactly (d/r)², so sqrt(1 − 1/F) is a hemisphere's height;
+   merged blobs inherit a believable surface for free. */
+const BLOBS = [ // orbit x, orbit y, freq x, freq y, phase x, phase y, radius
+  [0.62, 0.50, 1, 2, 0.4, 1.3, 0.30], [0.70, 0.46, 2, 1, 2.1, 0.4, 0.23],
+  [0.46, 0.64, 1, 3, 4.0, 2.2, 0.19], [0.80, 0.34, 3, 2, 1.0, 5.1, 0.15],
+  [0.34, 0.70, 2, 3, 3.3, 3.9, 0.21], [0.84, 0.58, 1, 1, 5.2, 0.9, 0.17],
+];
+const LIGHT = (() => { const l = [-0.5, -0.62, 0.6], m = Math.hypot(...l); return l.map(v => v / m); })();
+const HALF = (() => { const h = [LIGHT[0], LIGHT[1], LIGHT[2] + 1], m = Math.hypot(...h); return h.map(v => v / m); })();
+const bx = new Float32Array(BLOBS.length), by = new Float32Array(BLOBS.length), br = new Float32Array(BLOBS.length);
+function lava(th) {
+  const { ax, ay, h } = extent(), n = BLOBS.length;
+  for (let b = 0; b < n; b++) {
+    const [oxx, oyy, fx, fy, px, py, r] = BLOBS[b];
+    bx[b] = ax * oxx * Math.sin(th * fx + px);
+    by[b] = ay * oyy * Math.cos(th * fy + py);
+    br[b] = r * r;
+  }
+  eachSample((x, y) => {
+    let F = 0, gx = 0, gy = 0;
+    for (let b = 0; b < n; b++) {
+      const dx = x - bx[b], dy = y - by[b], q = dx * dx + dy * dy + 1e-4, w = br[b] / q;
+      F += w; gx -= 2 * w * dx / q; gy -= 2 * w * dy / q;
+    }
+    const gl = Math.sqrt(gx * gx + gy * gy) + 1e-9;
+    const cover = clamp01((F - 1) / (gl * h) + 0.5);                  // anti-aliased silhouette
+    if (cover <= 0) return 0;
+    const rho2 = Math.min(1, 1 / F), rho = Math.sqrt(rho2);
+    const nx = -gx / gl * rho, ny = -gy / gl * rho, nz = Math.sqrt(1 - rho2);
+    const diff = Math.max(0, nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2]);
+    const sp = Math.max(0, nx * HALF[0] + ny * HALF[1] + nz * HALF[2]);
+    const rim = 1 - nz;                                               // the silhouette turns away → dark outline
+    const ink = Math.max((0.1 + 0.9 * (1 - diff)) * (1 - Math.pow(sp, 60)), rim * rim * rim);
+    return ink * cover;
+  });
+}
+
+/* MARBLE — stripes run through a doubly warped coordinate system */
+function marble(th) {
+  eachSample((x, y) => {
+    const u = x * 1.45, v = y * 1.45;
+    const u2 = u + 0.55 * sn(1.9 * v + th) + 0.25 * sn(3.3 * v - 2 * th + 1.3);
+    const v2 = v + 0.55 * sn(1.6 * u - th + 2.1) + 0.25 * sn(2.9 * u + 2 * th + 0.7);
+    const f = sn(2.1 * u2 + sn(1.3 * v2 + th)) + sn(1.7 * v2 - sn(1.1 * u2 - th));
+    const s = 0.5 + 0.5 * sn(f * 2.6 + 0.6);
+    return clamp01((s - 0.5) * 1.7 + 0.5);
+  });
+}
+
+/* RIPPLE — three wandering emitters; their rings interfere */
+function ripple(th) {
+  const { ax, ay } = extent();
+  const e = [
+    [ax * 0.55 * Math.sin(th), ay * 0.5 * Math.cos(th), 2, 0],
+    [ax * 0.6 * Math.sin(th * 2 + 2.1), ay * 0.45 * Math.cos(th + 1.0), 3, 1.7],
+    [ax * 0.35 * Math.cos(th + 4.2), ay * 0.6 * Math.sin(th * 2 + 0.6), 2, 3.9],
+  ];
+  eachSample((x, y) => {
+    let s = 0;
+    for (let k = 0; k < 3; k++) {
+      const r = Math.hypot(x - e[k][0], y - e[k][1]);
+      s += sn(11 * r - th * e[k][2] + e[k][3]) / (1 + 0.5 * r);
+    }
+    return clamp01(0.5 + 0.55 * s);
+  });
+}
+const SCENES = { lava, marble, ripple };
+
+/* TYPE — the words are rasterised once, heavy and as large as the artboard
+   allows, then read back every frame through a slow wave while a band of
+   light travels across the letters. */
+let textRaster = null;
+function wrap(words, k) {
+  const total = words.join(' ').length, lines = [];
+  let cur = [], used = 0;
+  for (const w of words) {
+    cur.push(w); used += w.length + 1;
+    if (lines.length < k - 1 && used >= total * (lines.length + 1) / k) { lines.push(cur.join(' ')); cur = []; }
+  }
+  if (cur.length) lines.push(cur.join(' '));
+  return lines;
+}
+function buildTextRaster() {
+  const tw = sw * 2, th = sh * 2, gw = cols * cellW, gh = rows * cellH;
+  const c = document.createElement('canvas');
+  c.width = tw; c.height = th;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.scale(tw / gw, th / gh);      // samples are not square on screen — draw in screen space
+  const words = (P.text.trim() || 'TYPE').split(/\s+/);
+  // try every line count, keep the one that lets the type get biggest
+  let best = null;
+  g.font = `900 100px ${SANS}`;
+  for (let k = 1; k <= Math.min(words.length, 6); k++) {
+    const lines = wrap(words, k);
+    const widest = Math.max(...lines.map(l => g.measureText(l).width));
+    const size = Math.min(gw * 0.9 / widest * 100, gh * 0.82 / (lines.length * 0.9));
+    if (!best || size > best.size) best = { lines, size };
+  }
+  g.font = `900 ${best.size}px ${SANS}`;
+  g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = '#fff';
+  const lh = best.size * 0.9, n = best.lines.length;
+  best.lines.forEach((l, i) => g.fillText(l, gw / 2, gh / 2 + (i - (n - 1) / 2) * lh + best.size * 0.04));
+  const px = g.getImageData(0, 0, tw, th).data, a = new Uint8Array(tw * th);
+  for (let i = 0; i < a.length; i++) a[i] = px[i * 4 + 3];
+  textRaster = { a, tw, th };
+}
+function type(th) {
+  if (!textRaster) buildTextRaster();
+  const { a, tw, th: rh } = textRaster, amp = rh * 0.028;
+  for (let j = 0, i = 0; j < sh; j++) {
+    const y = j * 2 + 0.5;
+    const wx = amp * sn(y / rh * TAU * 1.25 + th);
+    for (let k = 0; k < sw; k++, i++) {
+      const x = k * 2 + 0.5;
+      const xx = x + wx, yy = y + amp * 0.7 * sn(x / tw * TAU * 1.5 - th);
+      const x0 = Math.floor(xx), y0 = Math.floor(yy);
+      if (x0 < 0 || y0 < 0 || x0 >= tw - 1 || y0 >= rh - 1) { D[i] = 0; continue; }
+      const fx = xx - x0, fy = yy - y0, o = y0 * tw + x0;
+      const al = ((a[o] * (1 - fx) + a[o + 1] * fx) * (1 - fy) +
+                  (a[o + tw] * (1 - fx) + a[o + tw + 1] * fx) * fy) / 255;
+      if (al < 0.004) { D[i] = 0; continue; }
+      const band = 0.5 + 0.5 * sn((x / tw * 1.3 + y / rh * 0.7) * TAU - th * 2);
+      D[i] = al * (1 - 0.42 * band * band * band * band);
+    }
+  }
+}
+
+/* IMAGE / VIDEO / CAMERA — drawn cover-fit onto a canvas the size of the
+   sample grid, then read back once: one getImageData whatever the source */
+const sampler = document.createElement('canvas');
+const sctx = sampler.getContext('2d', { willReadFrequently: true });
+let media = null;       // { el, url, video } once something is dropped
+const cam = { video: Object.assign(document.createElement('video'), { muted: true, playsInline: true }), stream: null };
+
+function placeholder() {   // stands in until something is dropped
+  const c = document.createElement('canvas');
+  c.width = 1200; c.height = 800;
+  const g = c.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+  for (const [x, y, r, shade] of [
+    [260, 240, 420, '#9a9a9a'], [960, 600, 460, '#3c3c3c'],
+    [1080, 120, 300, '#c4c4c4'], [120, 700, 320, '#6e6e6e'],
+  ]) {
+    const grad = g.createRadialGradient(x, y, 0, x, y, r);
+    grad.addColorStop(0, shade); grad.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grad;
+    g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill();
+  }
+  g.font = `900 150px ${SANS}`;
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.lineJoin = 'round'; g.lineWidth = 26; g.strokeStyle = '#fff'; g.fillStyle = '#000';
+  for (const [line, dy] of [['DROP AN', -88], ['IMAGE', 88]]) {
+    g.strokeText(line, c.width / 2, c.height / 2 + dy);
+    g.fillText(line, c.width / 2, c.height / 2 + dy);
+  }
+  return c;
+}
+let stand = null;
+function sampleMedia(el, mirror) {
+  const mw = el.videoWidth || el.naturalWidth || el.width, mh = el.videoHeight || el.naturalHeight || el.height;
+  if (!mw || !mh) { D.fill(0); return; }
+  if (sampler.width !== sw || sampler.height !== sh) { sampler.width = sw; sampler.height = sh; }
+  sctx.setTransform(1, 0, 0, 1, 0, 0);
+  sctx.fillStyle = '#fff'; sctx.fillRect(0, 0, sw, sh);   // transparency reads as paper
+  sctx.imageSmoothingQuality = 'high';
+  const gw = cols * cellW, gh = rows * cellH, s = Math.max(gw / mw, gh / mh);
+  const dw = mw * s * sw / gw, dh = mh * s * sh / gh;
+  if (mirror) { sctx.translate(sw, 0); sctx.scale(-1, 1); }
+  sctx.drawImage(el, (sw - dw) / 2, (sh - dh) / 2, dw, dh);
+  const px = sctx.getImageData(0, 0, sw, sh).data;
+  for (let i = 0, j = 0; i < D.length; i++, j += 4)
+    D[i] = 1 - (0.2126 * px[j] + 0.7152 * px[j + 1] + 0.0722 * px[j + 2]) / 255;
+}
+const SOURCES = {
+  field: ph => SCENES[P.scene](ph * TAU),
+  type: ph => type(ph * TAU),
+  image: () => sampleMedia(media ? media.el : (stand ||= placeholder()), false),
+  camera: () => sampleMedia(cam.video, true),
+};
+
+/* ------------------------------ tone ----------------------------
+   Photos and video get their levels stretched automatically (1st to
+   99th percentile, eased over time so a webcam doesn't pump); then
+   exposure, contrast and invert run through one 256-entry table.
+---------------------------------------------------------------- */
+const HIST = new Uint32Array(256), TONE = new Float32Array(256);
+const LV = { lo: 0, hi: 1, fresh: true };
+function autoLevels() {
+  HIST.fill(0);
+  for (let i = 0; i < D.length; i++) HIST[(D[i] * 255) | 0]++;
+  const cut = D.length * 0.01;
+  let lo = 0, hi = 255, a = 0, b = 0;
+  while (lo < 255 && (a += HIST[lo]) < cut) lo++;
+  while (hi > 0 && (b += HIST[hi]) < cut) hi--;
+  if (hi - lo < 24) { const mid = (hi + lo) / 2; lo = Math.max(0, mid - 12); hi = Math.min(255, mid + 12); }
+  const k = LV.fresh ? 1 : 0.08;
+  LV.lo += (lo / 255 - LV.lo) * k; LV.hi += (hi / 255 - LV.hi) * k; LV.fresh = false;
+}
+function applyTone() {
+  const auto = P.source === 'image' || P.source === 'camera';
+  if (auto) autoLevels();
+  const lo = auto ? LV.lo : 0, span = auto ? Math.max(0.05, LV.hi - LV.lo) : 1;
+  const gamma = Math.pow(2, P.exposure * 1.6);    // + exposure → brighter → less ink
+  for (let i = 0; i < 256; i++) {
+    let d = clamp01((i / 255 - lo) / span);
+    d = clamp01((Math.pow(d, gamma) - 0.5) * P.contrast + 0.5);
+    TONE[i] = P.invert ? 1 - d : d;
+  }
+  for (let i = 0; i < D.length; i++) D[i] = TONE[(D[i] * 255 + 0.5) | 0];
+}
+
+/* ------------------------------ lens ----------------------------
+   Press and drag: a disc of negative follows the pointer. It works on
+   the samples, before any glyph is chosen, so its rim is drawn by the
+   same shape matcher as everything else.
+---------------------------------------------------------------- */
+const lens = { x: 0, y: 0, r: 0, down: false };
+function applyLens() {
+  if (lens.r < 0.5) return;
+  const px = cellW / SX, py = cellH / SY;
+  const x0 = Math.max(0, Math.floor((lens.x - lens.r - ox) / px)), x1 = Math.min(sw - 1, Math.ceil((lens.x + lens.r - ox) / px));
+  const y0 = Math.max(0, Math.floor((lens.y - lens.r - oy) / py)), y1 = Math.min(sh - 1, Math.ceil((lens.y + lens.r - oy) / py));
+  for (let j = y0; j <= y1; j++) for (let k = x0; k <= x1; k++) {
+    const dist = Math.hypot(ox + (k + 0.5) * px - lens.x, oy + (j + 0.5) * py - lens.y);
+    const f = clamp01((lens.r - dist) / py + 0.5);
+    if (f > 0) { const i = j * sw + k; D[i] += (1 - 2 * D[i]) * f; }
+  }
+}
+function lensAt(e) {
+  const r = canvas.getBoundingClientRect();
+  lens.x = e.clientX - r.left; lens.y = e.clientY - r.top;
+}
+canvas.addEventListener('pointerdown', e => { lens.down = true; lensAt(e); try { canvas.setPointerCapture(e.pointerId); } catch {} });
+canvas.addEventListener('pointermove', e => { if (lens.down) lensAt(e); });
+for (const ev of ['pointerup', 'pointercancel']) canvas.addEventListener(ev, () => lens.down = false);
+
+/* --------------------------- renderers --------------------------- */
+
+/* VARIANT A — Shape. Per cell: mean darkness picks the spot on the tone
+   ramp; if the six samples disagree (an edge runs through the cell), glyphs
+   near that tone compete on shape. "Edge" sets how little disagreement it
+   takes, and how hard the cell's own contrast is exaggerated first, so a
+   boundary commits to a stroke instead of a soft average. "Grain" is an
+   ordered dither scaled to the local step of the ramp — it buys back the
+   tones a small character set cannot reach on its own. */
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(v => (v + 0.5) / 16 - 0.5);
+const TONE_W = 12;    // how much a tone miss costs against a shape miss
+function renderShape() {
+  const { n, code, tone, dev, start, gap } = GLY;
+  const crisp = 1 + P.edge * 2.5, reach = 0.5 - 0.42 * P.edge;
+  for (let r = 0, i = 0; r < rows; r++) {
+    const i0 = r * SY * sw, i1 = i0 + sw, i2 = i1 + sw;
+    for (let c = 0; c < cols; c++, i++) {
+      const x = c * SX;
+      let a = D[i0 + x], b = D[i0 + x + 1], cc = D[i1 + x], d = D[i1 + x + 1], ee = D[i2 + x], f = D[i2 + x + 1];
+      const hi = Math.max(a, b, cc, d, ee, f);
+      if (hi < 0.012) { CH[i] = 32; continue; }
+      let m = (a + b + cc + d + ee + f) / 6;
+      m = clamp01(m + BAYER[(r & 3) << 2 | (c & 3)] * P.grain * gap[(m * 255 + 0.5) | 0]);
+      const beta = P.edge > 0 ? clamp01((hi - Math.min(a, b, cc, d, ee, f) - 0.05) / reach) : 0;
+
+      const j = start[(m * 255 + 0.5) | 0];
+      let best = j;
+      if (beta > 0) {
+        if (crisp > 1) {    // darkest sample keeps its value, the rest fall away
+          a = Math.pow(a / hi, crisp) * hi; b = Math.pow(b / hi, crisp) * hi; cc = Math.pow(cc / hi, crisp) * hi;
+          d = Math.pow(d / hi, crisp) * hi; ee = Math.pow(ee / hi, crisp) * hi; f = Math.pow(f / hi, crisp) * hi;
+        }
+        const mu = (a + b + cc + d + ee + f) / 6;
+        a -= mu; b -= mu; cc -= mu; d -= mu; ee -= mu; f -= mu;
+        // glyphs are sorted by tone: walk outward from the nearest one and
+        // stop as soon as the tone miss alone is worse than the best so far
+        let bd = 1e9;
+        for (let dir = -1; dir <= 1; dir += 2) {
+          for (let k = dir < 0 ? j : j + 1; k >= 0 && k < n; k += dir) {
+            const dt = m - tone[k], cost = TONE_W * dt * dt;
+            if (cost >= bd) break;
+            const o = k * 6;
+            const s0 = a - dev[o], s1 = b - dev[o + 1], s2 = cc - dev[o + 2],
+                  s3 = d - dev[o + 3], s4 = ee - dev[o + 4], s5 = f - dev[o + 5];
+            const dist = cost + beta * (s0 * s0 + s1 * s1 + s2 * s2 + s3 * s3 + s4 * s4 + s5 * s5);
+            if (dist < bd) { bd = dist; best = k; }
+          }
+        }
+      }
+      CH[i] = code[best];
+    }
+  }
+}
+
+function cellMeans() {
+  for (let r = 0, i = 0; r < rows; r++) {
+    const i0 = r * SY * sw, i1 = i0 + sw, i2 = i1 + sw;
+    for (let c = 0; c < cols; c++, i++) {
+      const x = c * SX;
+      M[i] = (D[i0 + x] + D[i0 + x + 1] + D[i1 + x] + D[i1 + x + 1] + D[i2 + x] + D[i2 + x + 1]) / 6;
+    }
+  }
+}
+function blurMeans() {   // one separable 1-2-1 pass
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const i = r * cols + c;
+    T[i] = (M[c > 0 ? i - 1 : i] + 2 * M[i] + M[c < cols - 1 ? i + 1 : i]) / 4;
+  }
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const i = r * cols + c;
+    M[i] = (T[r > 0 ? i - cols : i] + 2 * T[i] + T[r < rows - 1 ? i + cols : i]) / 4;
+  }
+}
+
+/* VARIANT B — Contour: a topographic map. Tone is cut into "Levels" bands
+   and only the borders between bands are drawn — marching squares, with the
+   16 corner cases mapped onto strokes the keyboard already has. Where a
+   border is nearly flat its height in the cell picks ¯, - or _. */
+const LINE = '|/\\-_¯+';
+let lineUniform = true;
+function renderContour() {
+  cellMeans();
+  for (let k = 0; k < P.smooth; k++) blurMeans();
+  const L = P.levels;
+  for (let r = 0, i = 0; r < rows; r++) {
+    const dn = r < rows - 1 ? cols : 0;
+    for (let c = 0; c < cols; c++, i++) {
+      const rt = c < cols - 1 ? 1 : 0;
+      const tl = M[i], tr = M[i + rt], bl = M[i + dn], br = M[i + dn + rt];
+      const lo = Math.min(tl, tr, bl, br), hi = Math.max(tl, tr, bl, br);
+      let k = Math.floor(lo * L) + 1;
+      if (k >= L || k / L > hi) { CH[i] = 32; continue; }
+      // several borders through one cell (a steep edge): draw the middle one
+      const mid = Math.round((lo + hi) / 2 * L);
+      if (mid > k && mid < L && mid / L <= hi) k = mid;
+      const t = k / L;
+      const idx = (tl >= t ? 8 : 0) | (tr >= t ? 4 : 0) | (br >= t ? 2 : 0) | (bl >= t ? 1 : 0);
+      let ch = 32;
+      switch (idx) {
+        case 1: case 14: case 4: case 11: ch = 92; break;                 // \
+        case 2: case 13: case 8: case 7: ch = 47; break;                  // /
+        case 3: case 12: {                                                // crosses left → right
+          const yl = (t - tl) / (bl - tl), yr = (t - tr) / (br - tr), y = (yl + yr) / 2;
+          ch = Math.abs(yl - yr) > 0.55 ? (yl > yr ? 47 : 92) : y < 0.34 ? 175 : y > 0.66 ? 95 : 45;
+          break;
+        }
+        case 6: case 9: {                                                 // crosses top → bottom
+          const xt = (t - tl) / (tr - tl), xb = (t - bl) / (br - bl);
+          ch = Math.abs(xt - xb) > 0.55 ? (xt > xb ? 47 : 92) : 124;
+          break;
+        }
+        case 5: case 10: ch = 43; break;                                  // saddle
+      }
+      CH[i] = ch;
+    }
+  }
+}
+
+/* VARIANT C — Words: your sentence set as a page, left to right, top to
+   bottom, never reshuffled — and every letter swells with the darkness
+   behind it. The picture is carried by weight alone. */
+let wordList = [...P.words];
+function renderWords() {
+  cellMeans();
+  const top = 0.75 + P.swell * 2.4;
+  for (let i = 0; i < M.length; i++) SC[i] = M[i] < 0.04 ? 0 : 0.3 + M[i] * top;
+}
+
+/* ------------------------------ paint ---------------------------
+   One painter for the screen and the PNG export: k is the pixel
+   scale, so a 4× export sets real type at 4× instead of upscaling.
+---------------------------------------------------------------- */
+function paint(g, k) {
+  g.setTransform(k, 0, 0, k, 0, 0);
+  g.fillStyle = C.paper; g.fillRect(0, 0, W, H);
+  g.fillStyle = C.ink;
+  g.font = font(P.size); g.textBaseline = 'alphabetic';
+  try { g.fontKerning = 'none'; g.textRendering = 'optimizeSpeed'; } catch {}   // no ligatures, please
+
+  if (VARIANTS[current].key === 'C') {
+    g.textAlign = 'center';
+    const n = wordList.length;
+    for (let r = 0, i = 0; r < rows; r++) for (let c = 0; c < cols; c++, i++) {
+      const s = SC[i], ch = wordList[i % n];
+      if (!s || ch === ' ') continue;
+      g.setTransform(k * s, 0, 0, k * s, k * (ox + (c + 0.5) * cellW), k * (oy + (r + 0.5) * cellH));
+      g.fillText(ch, 0, lift);
+    }
+    g.setTransform(k, 0, 0, k, 0, 0);
+    return;
+  }
+
+  // a true monospace row can go down as one string; anything with
+  // fallback-font glyphs is placed cell by cell to hold the grid
+  const uniform = VARIANTS[current].key === 'A' ? GLY.uniform : lineUniform;
+  g.textAlign = uniform ? 'left' : 'center';
+  for (let r = 0; r < rows; r++) {
+    const y = oy + r * cellH + cellH / 2 + lift, row = CH.subarray(r * cols, (r + 1) * cols);
+    if (uniform) {
+      const s = String.fromCharCode.apply(null, row);
+      if (s.trim()) g.fillText(s, ox, y);
+    } else {
+      for (let c = 0; c < cols; c++)
+        if (row[c] !== 32) g.fillText(String.fromCharCode(row[c]), ox + (c + 0.5) * cellW, y);
+    }
+  }
+}
+
+function compute() {
+  SOURCES[P.source](phase % 1);
+  applyTone();
+  applyLens();
+  VARIANTS[current].fn();
+}
+
+/* ----------------------------- exports --------------------------- */
+const stamp = () => new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
+const fileName = ext => `ascii-${VARIANTS[current].name.toLowerCase()}-${stamp()}.${ext}`;
+function download(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+function exportPNG() {
+  const k = Math.max(2, Math.min(4, Math.ceil(3840 / Math.max(W, H))));
+  const c = document.createElement('canvas');
+  c.width = Math.round(W * k); c.height = Math.round(H * k);
+  paint(c.getContext('2d'), k);
+  c.toBlob(b => { download(b, fileName('png')); say(`saved PNG · ${c.width}×${c.height}`); }, 'image/png');
+}
+
+/* SVG keeps the characters as live <text>: runs of glyphs are anchored to
+   their column, so even if another machine substitutes the monospace font
+   the grid re-registers at every gap. */
+function exportSVG() {
+  const esc = s => s.replace(/[&<>]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[m]));
+  const f = v => +v.toFixed(2);
+  const out = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`,
+    `<rect width="${W}" height="${H}" fill="${C.paper}"/>`,
+    `<g fill="${C.ink}" font-family="${MONO.replace(/"/g, "'")}" font-weight="700" font-size="${P.size}" style="font-variant-ligatures:none">`,
+  ];
+  if (VARIANTS[current].key === 'C') {
+    const n = wordList.length;
+    for (let r = 0, i = 0; r < rows; r++) for (let c = 0; c < cols; c++, i++) {
+      const s = SC[i], ch = wordList[i % n];
+      if (!s || ch === ' ') continue;
+      out.push(`<text x="${f(ox + (c + 0.5) * cellW)}" y="${f(oy + (r + 0.5) * cellH + lift * s)}" ` +
+               `font-size="${f(P.size * s)}" text-anchor="middle">${esc(ch)}</text>`);
+    }
+  } else {
+    for (let r = 0; r < rows; r++) {
+      const s = String.fromCharCode.apply(null, CH.subarray(r * cols, (r + 1) * cols));
+      const y = f(oy + r * cellH + cellH / 2 + lift);
+      for (const m of s.matchAll(/\S+(?: \S+)*/g))
+        out.push(`<text x="${f(ox + m.index * cellW)}" y="${y}"` +
+                 (m[0].length > 1 ? ` textLength="${f(m[0].length * cellW)}"` : '') + `>${esc(m[0])}</text>`);
+    }
+  }
+  out.push('</g>', '</svg>');
+  download(new Blob([out.join('\n')], { type: 'image/svg+xml' }), fileName('svg'));
+  say(`saved SVG · ${out.length - 5} text runs`);
+}
+
+/* LOOP — records the canvas itself. Procedural sources stop after exactly
+   one cycle, so the clip loops without a seam; live sources (camera, video)
+   run until you click again, 10 s at most. */
+let rec = null;
+const REC_MAX = 10;
+function toggleLoop() {
+  if (rec) return stopLoop();
+  const mime = window.MediaRecorder && canvas.captureStream &&
+    ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'].find(m => MediaRecorder.isTypeSupported(m));
+  if (!mime) return say('this browser cannot record the canvas');
+  const stream = canvas.captureStream(60), chunks = [];
+  const mr = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 24e6 });
+  mr.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+  mr.onstop = () => {
+    stream.getTracks().forEach(t => t.stop());
+    const type = mime.split(';')[0];
+    download(new Blob(chunks, { type }), fileName(type.split('/')[1]));
+    say('saved loop');
+  };
+  const periodic = (P.source === 'field' || P.source === 'type') && P.speed > 0;
+  if (periodic) paused = false;
+  rec = { mr, periodic, phase0: phase, t0: performance.now() };
+  mr.start();
+  $('loop').classList.add('busy');
+}
+function stopLoop() {
+  if (!rec) return;
+  try { rec.mr.stop(); } catch {}
+  rec = null;
+  $('loop').classList.remove('busy'); $('loop').textContent = 'Loop';
+}
+function tickLoop(now) {
+  const left = rec.periodic ? (1 - (phase - rec.phase0)) * LOOP / Math.max(0.05, P.speed)
+                            : REC_MAX - (now - rec.t0) / 1000;
+  if (left <= 0 || now - rec.t0 > 60000) return stopLoop();
+  $('loop').textContent = `■ ${left.toFixed(1)}s`;
+}
+
+$('png').onclick = exportPNG;
+$('svg').onclick = exportSVG;
+$('loop').onclick = toggleLoop;
+
+/* ------------------------------ panel ---------------------------- */
+const HINT = 'drop an image or video anywhere · drag on the canvas for a negative lens · H hides the panel';
+let sayTimer;
+function say(msg) {
+  $('hint').textContent = msg;
+  clearTimeout(sayTimer);
+  sayTimer = setTimeout(() => $('hint').textContent = HINT, 4500);
+}
+$('hint').textContent = HINT;
+
+for (const k of ['contrast', 'exposure', 'edge', 'grain', 'levels', 'smooth', 'swell'])
+  $(k).addEventListener('input', e => { P[k] = +e.target.value; dirty = true; });
+$('speed').addEventListener('input', e => { P.speed = +e.target.value; syncVideo(); });
+$('size').addEventListener('input', e => { P.size = +e.target.value; layout(); });
+$('invert').addEventListener('input', e => { P.invert = e.target.checked; dirty = true; });
+$('text').addEventListener('input', e => { P.text = e.target.value; textRaster = null; dirty = true; });
+$('words').addEventListener('input', e => {
+  P.words = e.target.value;
+  wordList = [...(P.words.trim() ? P.words : 'HELLO WORLD ')];
+  dirty = true;
+});
+
+// character sets: pick a preset, or just type — any characters work,
+// the matcher measures whatever it is given
+for (const [name] of CHARSETS) $('charset').add(new Option(name));
+$('charset').add(new Option('Custom'));
+$('charset').addEventListener('change', e => {
+  const hit = CHARSETS.find(c => c[0] === e.target.value);
+  if (hit) { $('chars').value = hit[1]; setChars(hit[1]); e.target.blur(); } else $('chars').focus();
+});
+$('chars').addEventListener('input', e => { $('charset').value = 'Custom'; setChars(e.target.value); });
+$('chars').value = CHARSETS[0][1];
+
+function segmented(id, onPick) {
+  const el = $(id);
+  el.addEventListener('click', e => { const b = e.target.closest('button'); if (b) onPick(b.dataset.k); });
+  return k => { for (const b of el.children) b.setAttribute('aria-pressed', b.dataset.k === k); };
+}
+const markScene = segmented('scene', k => { P.scene = k; markScene(k); dirty = true; });
+const markFormat = segmented('format', k => { P.format = k; markFormat(k); layout(); });
+const markSource = segmented('source', k => setSource(k));
+markScene(P.scene); markFormat(P.format);
+
+function setSource(k, fromFile) {
+  if (k === 'image' && !fromFile && (!media || P.source === 'image')) $('file').click();   // first click, or click again to replace
+  if (k === 'camera' && P.source !== 'camera') return startCamera();
+  if (k !== 'camera') stopCamera();
+  P.source = k; LV.fresh = true;
+  markSource(k);
+  for (const el of document.querySelectorAll('[data-s]')) el.hidden = el.dataset.s !== k;
+  syncVideo();
+  dirty = true;
+}
+async function startCamera() {
+  try {
+    cam.stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    cam.video.srcObject = cam.stream;
+    await cam.video.play();
+    P.source = 'camera';        // set first so setSource doesn't re-enter
+    setSource('camera');
+  } catch {
+    stopCamera();
+    say('no camera — it needs permission, and a page served over https or localhost');
+  }
+}
+function stopCamera() {
+  if (cam.stream) cam.stream.getTracks().forEach(t => t.stop());
+  cam.stream = null; cam.video.srcObject = null;
+}
+
+function loadFile(file) {
+  if (!file) return;
+  const isVideo = file.type.startsWith('video/');
+  if (!isVideo && !file.type.startsWith('image/')) return say('that file is neither an image nor a video');
+  const url = URL.createObjectURL(file);
+  const ready = el => {
+    if (media) { if (media.video) media.el.pause(); URL.revokeObjectURL(media.url); }
+    media = { el, url, video: isVideo };
+    setSource('image', true);
+  };
+  const fail = () => { URL.revokeObjectURL(url); say('could not read that file'); };
+  if (isVideo) {
+    const v = Object.assign(document.createElement('video'), { muted: true, loop: true, playsInline: true });
+    v.addEventListener('loadeddata', () => ready(v), { once: true });
+    v.addEventListener('error', fail, { once: true });
+    v.src = url;
+  } else {
+    const img = new Image();
+    img.onload = () => ready(img); img.onerror = fail;
+    img.src = url;
+  }
+}
+function syncVideo() {   // a dropped video follows Speed and pause like the fields do
+  if (!media || !media.video) return;
+  const play = P.source === 'image' && !paused && P.speed > 0;
+  if (play) { media.el.playbackRate = Math.max(0.25, Math.min(3, P.speed)); media.el.play().catch(() => {}); }
+  else media.el.pause();
+}
+$('file').addEventListener('change', e => { loadFile(e.target.files[0]); e.target.value = ''; });
+window.addEventListener('dragover', e => { e.preventDefault(); document.body.classList.add('dragging'); });
+window.addEventListener('dragleave', e => { if (!e.relatedTarget) document.body.classList.remove('dragging'); });
+window.addEventListener('drop', e => {
+  e.preventDefault();
+  document.body.classList.remove('dragging');
+  loadFile(e.dataTransfer.files[0]);
+});
+
+// a mouse click shouldn't leave focus parked on a control: the keys
+// (arrows, space, H) belong to the canvas again. Keyboard focus is left alone.
+for (const id of ['panel', 'switcher']) {
+  $(id).addEventListener('click', e => { const b = e.target.closest('button'); if (b && e.detail) b.blur(); });
+  $(id).addEventListener('pointerup', e => { if (e.target.type === 'range') e.target.blur(); });
+}
+
+const toggleBare = () => {
+  const bare = document.body.classList.toggle('bare');
+  $('fold').textContent = bare ? '+' : '–';
+};
+$('fold').onclick = toggleBare;
+if (window.innerWidth < 600) toggleBare();    // on a phone the picture comes first
+
+/* --------------------------- switcher --------------------------- */
+const VARIANTS = [
+  { key: 'A', name: 'Shape', fn: renderShape },
+  { key: 'B', name: 'Contour', fn: renderContour },
+  { key: 'C', name: 'Words', fn: renderWords },
+];
+let current = Math.max(0, VARIANTS.findIndex(v =>
+  v.key === new URLSearchParams(location.search).get('variant')));
+// each renderer remembers its own type size — Words wants bigger letters
+const SIZES = { A: 13, B: 13, C: 20 };
+
+function setVariant(i) {
+  if (CH) SIZES[VARIANTS[current].key] = P.size;
+  current = (i + VARIANTS.length) % VARIANTS.length;
+  const v = VARIANTS[current];
+  $('label').textContent = `${v.key} — ${v.name}`;
+  $('variant-title').textContent = v.name;
+  for (const el of document.querySelectorAll('[data-v]')) el.hidden = el.dataset.v !== v.key;
+  P.size = SIZES[v.key]; $('size').value = P.size;
+  try { // history API is unavailable on some file:// setups — switching still works
+    const url = new URL(location.href);
+    url.searchParams.set('variant', v.key);
+    history.replaceState(null, '', url);
+  } catch {}
+  layout();
+}
+$('prev').onclick = () => setVariant(current - 1);
+$('next').onclick = () => setVariant(current + 1);
+window.addEventListener('keydown', e => {
+  const el = document.activeElement, tag = el.tagName;
+  const typing = tag === 'TEXTAREA' || tag === 'SELECT' ||
+    (tag === 'INPUT' && !/^(range|checkbox|color)$/.test(el.type));
+  if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (el.type !== 'range') {      // a focused slider keeps its arrow keys
+    if (e.key === 'ArrowLeft') setVariant(current - 1);
+    if (e.key === 'ArrowRight') setVariant(current + 1);
+  }
+  if (e.key === 'h' || e.key === 'H') toggleBare();
+  if (e.key === ' ' && tag !== 'BUTTON' && el.type !== 'checkbox') {
+    e.preventDefault(); paused = !paused; syncVideo();
+    say(paused ? 'paused — space to resume' : 'playing');
+  }
+});
+
+/* -------------------------- render loop -------------------------
+   Redraws only when something can have changed: a moving source,
+   a touched control, or the lens easing in or out.
+---------------------------------------------------------------- */
+let phase = reducedMotion ? 0.14 : 0;     // in cycles; never wrapped, so a recording can count one
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000);
+  last = now;
+  const procedural = P.source === 'field' || P.source === 'type';
+  const moving = !paused && (procedural ? P.speed > 0 : P.source === 'camera' || (media && media.video && P.speed > 0));
+  if (moving && procedural) phase += dt * P.speed / LOOP;
+
+  const target = lens.down ? Math.min(W, H) * 0.19 : 0;
+  const easing = Math.abs(target - lens.r) > 0.3;
+  if (easing) lens.r += (target - lens.r) * Math.min(1, dt * 14); else lens.r = target;
+
+  if (rec) tickLoop(now);
+  if (moving || dirty || easing || lens.down || rec) {
+    dirty = false;
+    compute();
+    paint(ctx, dpr);
+  }
+  requestAnimationFrame(frame);
+}
+
+window.addEventListener('resize', layout);
+setChars(CHARSETS[0][1]);
+{ // do the contour strokes share the font's advance? (¯ can come from a fallback font)
+  ctx.font = font(48);
+  const w = ctx.measureText('M').width;
+  lineUniform = [...LINE].every(ch => Math.abs(ctx.measureText(ch).width - w) < 0.05);
+}
+setVariant(current);
+setSource(P.source);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

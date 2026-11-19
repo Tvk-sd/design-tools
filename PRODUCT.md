@@ -10,7 +10,7 @@ Fellow designers and creative coders arriving via a shared link. They judge in s
 
 ## Product Purpose
 
-A public playground of self-built generative design tools (kinetic type, flow-field ink, halftone, reaction-diffusion, physics type). Every tool is a single dependency-free HTML file. The landing page's job: make a designer want to click into a toy within five seconds, and demonstrate the playground's quality by being generative itself.
+A public playground of self-built generative design tools (kinetic type, flow-field ink, halftone, reaction-diffusion, physics type, ASCII). Every tool is a single dependency-free HTML file. The landing page's job: make a designer want to click into a toy within five seconds, and demonstrate the playground's quality by being generative itself.
 
 ## Brand Personality
 
