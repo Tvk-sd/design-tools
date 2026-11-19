@@ -1,0 +1,977 @@
+<!doctype html>
+<!--
+  Material Forms — tool #6 of the Design Tools playground.
+  Drawn strokes inflate into 2.5D relief — coils, beads, puffy type —
+  with tactile surfaces. Three materials, switchable via ?variant= /
+  the bottom bar / arrow keys: clay, metal, plastic. The light follows
+  the cursor while you hover, so moving the mouse rakes light across
+  the forms. Drag to add material, shift-drag to carve, R new
+  composition, C clear, Ctrl/⌘-Z undo, L locks the light.
+
+  How it works: heights live in a Float32Array on the CPU at half the
+  viewport resolution. A stroke is a chain of sphere-cap dabs, max-
+  unioned into a stroke layer and then smooth-unioned onto a snapshot
+  of the field taken at pointerdown — so a stroke drapes over the
+  forms already there instead of piling up dab by dab. The GPU does
+  the rest in two passes: soft shadows + ambient occlusion at field
+  resolution, then the material shading at full resolution.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Material Forms — prototype</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #000; overflow: hidden; font-family: ui-sans-serif, system-ui, sans-serif; }
+  canvas { display: block; cursor: none; touch-action: none; }
+
+  /* control panel */
+  #panel {
+    position: fixed; top: 16px; left: 16px; z-index: 10;
+    background: rgba(20,20,20,.85); color: #eee; padding: 14px 16px;
+    border-radius: 10px; font-size: 12px; width: 220px;
+    backdrop-filter: blur(6px);
+  }
+  #panel label { display: block; margin-top: 10px; color: #999; }
+  #panel input[type=range] { width: 100%; }
+  #panel .check { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: #999; }
+  #panel .check input { margin: 0; }
+  #panel .row { display: flex; gap: 6px; margin-top: 4px; }
+  #panel input[type=text] {
+    flex: 1; min-width: 0; padding: 4px 6px; border-radius: 6px;
+    border: 1px solid #444; background: #111; color: #eee; font-size: 12px;
+  }
+  #panel .row button, #panel .buttons button {
+    padding: 4px 8px; border-radius: 6px;
+    border: 1px solid #444; background: #111; color: #eee; font-size: 12px; cursor: pointer;
+  }
+  #panel .buttons { display: flex; gap: 6px; margin-top: 12px; }
+  #panel .buttons button { flex: 1; padding: 6px; }
+  #panel .hint { margin-top: 10px; color: #666; line-height: 1.5; }
+
+  /* ink & paper — shared color block, identical across tools */
+  #panel .swatches { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+  #panel .swatches input[type=color] {
+    flex: 1; height: 26px; padding: 1px; border: 1px solid #444;
+    border-radius: 6px; background: #111; cursor: pointer;
+  }
+  #panel .swatches button {
+    border: 1px solid #444; background: #111; color: #eee;
+    border-radius: 6px; height: 26px; width: 30px; cursor: pointer;
+  }
+  #panel .presets { display: flex; gap: 5px; margin-top: 8px; }
+  #panel .presets button {
+    flex: 1; height: 16px; padding: 0; border: 1px solid #444; border-radius: 4px;
+    overflow: hidden; display: flex; cursor: pointer; background: none;
+  }
+  #panel .presets span { flex: 1; }
+
+  /* prototype switcher — deliberately NOT styled like the design being judged */
+  #switcher {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 10;
+    display: flex; align-items: center; gap: 12px;
+    background: #fff; color: #000; border-radius: 999px; padding: 8px 16px;
+    font-size: 13px; font-weight: 600; box-shadow: 0 4px 20px rgba(0,0,0,.5);
+    user-select: none;
+  }
+  #switcher button {
+    border: 0; background: none; font-size: 16px; cursor: pointer; padding: 2px 6px;
+  }
+  #switcher span { min-width: 180px; text-align: center; }
+
+  /* brush ring — shows the dab size; dashed while carving */
+  #ring {
+    position: fixed; left: 0; top: 0; z-index: 5; pointer-events: none;
+    border: 1.5px solid #fff; border-radius: 50%; mix-blend-mode: difference;
+    display: none;
+  }
+  #ring.carve { border-style: dashed; }
+
+  #nogl {
+    display: none; position: fixed; inset: 0; align-items: center; justify-content: center;
+    color: #888; font-size: 14px; text-align: center; padding: 24px;
+  }
+  body.nogl #nogl { display: flex; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ring"></div>
+<div id="nogl">This tool needs WebGL2, which this browser doesn't offer.</div>
+
+<div id="panel">
+  <strong id="variant-title"></strong>
+  <label>Brush <input type="range" id="brush" min="4" max="90" step="1" value="22" /></label>
+  <label>Depth <input type="range" id="depth" min="0.15" max="2.5" step="0.05" value="1" /></label>
+  <label>Blend <input type="range" id="blend" min="0" max="1" step="0.01" value="0.45" /></label>
+  <label><span id="finish-label">Finish</span> <input type="range" id="finish" min="0" max="1" step="0.01" value="0.5" /></label>
+  <label class="check"><input type="checkbox" id="follow" checked /> Light follows cursor</label>
+  <label>Text</label>
+  <div class="row">
+    <input type="text" id="word" value="FORM" />
+    <button id="stamp" title="Inflate the text into the middle of the canvas">Stamp</button>
+  </div>
+  <label>Colors — ink ⇄ paper</label>
+  <div class="swatches">
+    <input type="color" id="ink" value="#ff4b2e" title="Ink" />
+    <button id="swap" title="Swap ink and paper">⇄</button>
+    <input type="color" id="paper" value="#f7f1e1" title="Paper" />
+  </div>
+  <div class="presets" id="presets"></div>
+  <div class="buttons">
+    <button id="regen">New forms</button><button id="clear">Clear</button>
+  </div>
+  <div class="hint">drag to add · shift-drag to carve<br />R new forms · C clear · L lock light<br />⌘/Ctrl-Z undo · right-click to save</div>
+</div>
+
+<div id="switcher">
+  <button id="prev">←</button><span id="label"></span><button id="next">→</button>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true, antialias: false, alpha: false });
+if (!gl) document.body.classList.add('nogl');
+
+const SIM = 0.5;               // height-field pixels per CSS pixel
+let W = 0, H = 0, dpr = 1;     // viewport (CSS px)
+let SW = 0, SH = 0;            // height field size
+
+// live params from the panel
+const P = { brush: 22, depth: 1, blend: 0.45 };
+let needsRender = true;
+for (const k of ['brush', 'depth', 'blend'])
+  document.getElementById(k).addEventListener('input', e => {
+    P[k] = +e.target.value; needsRender = true; sizeRing();
+  });
+
+/* ------------------------------ colors --------------------------
+   Ink & Paper — every tool in this playground is two colors: the
+   mark (ink) and the ground (paper). Both live in the URL so a good
+   combo is a bookmarkable link. Presets are shared playground-wide.
+   Here ink is the material (clay body / metal tint / plastic dye)
+   and paper is the tabletop the forms sit on.
+---------------------------------------------------------------- */
+const PRESETS = [
+  { name: 'Print',     paper: '#ffffff', ink: '#000000' },
+  { name: 'Blueprint', paper: '#0b2447', ink: '#a9d6ff' },
+  { name: 'Riso Red',  paper: '#f7f1e1', ink: '#ff4b2e' },
+  { name: 'Terminal',  paper: '#0a0f0a', ink: '#33ff66' },
+  { name: 'Butter',    paper: '#ffd966', ink: '#33200a' },
+  { name: 'Midnight',  paper: '#000000', ink: '#9d5cff' },
+];
+const C = { ink: '#ff4b2e', paper: '#f7f1e1' };
+{
+  const q = new URLSearchParams(location.search);
+  for (const k of ['ink', 'paper'])
+    if (/^[0-9a-fA-F]{6}$/.test(q.get(k) || '')) C[k] = '#' + q.get(k);
+}
+const inkEl = document.getElementById('ink'), paperEl = document.getElementById('paper');
+function setColors(ink, paper) {
+  C.ink = ink; C.paper = paper;
+  inkEl.value = ink; paperEl.value = paper;
+  needsRender = true;
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('ink', ink.slice(1));
+    url.searchParams.set('paper', paper.slice(1));
+    history.replaceState(null, '', url);
+  } catch {}
+}
+inkEl.addEventListener('input', e => setColors(e.target.value, C.paper));
+paperEl.addEventListener('input', e => setColors(C.ink, e.target.value));
+document.getElementById('swap').onclick = () => setColors(C.paper, C.ink);
+for (const p of PRESETS) {
+  const b = document.createElement('button');
+  b.title = p.name;
+  b.innerHTML = `<span style="background:${p.paper}"></span><span style="background:${p.ink}"></span>`;
+  b.onclick = () => setColors(p.ink, p.paper);
+  document.getElementById('presets').appendChild(b);
+}
+setColors(C.ink, C.paper);
+const rgb01 = hex => { const n = parseInt(hex.slice(1), 16); return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255]; };
+
+/* -------------------------- height field ------------------------
+   hf holds heights in field pixels (a sphere cap of radius R is R
+   tall), so Depth = 1 means true proportions. tex4 mirrors it for
+   the GPU as (slope x, slope y, height, edge distance); only the
+   dirty rectangle is recomputed and uploaded.
+---------------------------------------------------------------- */
+let hf = new Float32Array(0), tex4 = new Float32Array(0);
+let snap = null, layer = new Float32Array(0), strokeMode = 'add', carveBase = null;
+let undo = [];
+const dirty = { x0: Infinity, y0: Infinity, x1: -1, y1: -1 };
+function markDirty(x0, y0, x1, y1) {
+  dirty.x0 = Math.min(dirty.x0, x0); dirty.y0 = Math.min(dirty.y0, y0);
+  dirty.x1 = Math.max(dirty.x1, x1); dirty.y1 = Math.max(dirty.y1, y1);
+  needsRender = true;
+}
+const markAll = () => markDirty(0, 0, SW - 1, SH - 1);
+
+function smax(a, b, k) {
+  if (k <= 0) return a > b ? a : b;
+  const h = Math.max(k - Math.abs(a - b), 0) / k;
+  return (a > b ? a : b) + h * h * k * 0.25;
+}
+function smin(a, b, k) {
+  if (k <= 0) return a < b ? a : b;
+  const h = Math.max(k - Math.abs(a - b), 0) / k;
+  return (a < b ? a : b) - h * h * k * 0.25;
+}
+
+function pushUndo(field) {
+  undo.push(field);
+  if (undo.length > 24) undo.shift();
+}
+function doUndo() {
+  const prev = undo.pop();
+  if (!prev || prev.length !== hf.length) return;
+  hf.set(prev); markAll();
+}
+
+// a stroke smooth-unions with the field as it was at pointerdown,
+// so dabs within one stroke never compound each other
+function beginStroke(mode, recordUndo = true) {
+  snap = hf.slice();
+  if (recordUndo) pushUndo(snap);
+  strokeMode = mode;
+  carveBase = null;
+  layer.fill(mode === 'add' ? -1e9 : 1e9);
+}
+function endStroke() { snap = null; }
+
+function snapAt(x, y) {
+  const xi = Math.min(SW - 1, Math.max(0, Math.round(x)));
+  const yi = Math.min(SH - 1, Math.max(0, Math.round(y)));
+  return snap[yi * SW + xi];
+}
+
+// height of the existing surface under the nozzle, averaged over the
+// tip so a stroke drapes smoothly over what it crosses
+function baseAt(x, y, R) {
+  const o = R * 0.5;
+  return (snapAt(x, y) + snapAt(x + o, y) + snapAt(x - o, y) +
+          snapAt(x, y + o) + snapAt(x, y - o)) / 5;
+}
+
+// a capsule of material from a to b. Add: a round tube of radius R
+// riding on the surface under it, with a steep apron outside so it
+// fillets into forms it touches (Blend sets how much; bare paper
+// gets no fillet, so forms sit crisply on the table). Carve: a ball dragged 0.6R below the
+// surface where the stroke began, at that depth all the way.
+// Radius and base interpolate along the capsule, so a stroke is one
+// seamless tube rather than a chain of scalloped spheres.
+function segment(ax, ay, Ra, bx, by, Rb) {
+  const add = strokeMode === 'add';
+  if (!add && carveBase === null) carveBase = baseAt(ax, ay, Ra);
+  const baseA = add ? baseAt(ax, ay, Ra) : carveBase, baseB = add ? baseAt(bx, by, Rb) : carveBase;
+  const Rm = Math.max(Ra, Rb), km = P.blend * 0.8 * Rm;
+  const ext = Rm + (add ? (Math.max(baseA, baseB) + km) * 0.5 : km + Rm * 0.5) + 2;
+  const x0 = Math.max(0, Math.floor(Math.min(ax, bx) - ext)), x1 = Math.min(SW - 1, Math.ceil(Math.max(ax, bx) + ext));
+  const y0 = Math.max(0, Math.floor(Math.min(ay, by) - ext)), y1 = Math.min(SH - 1, Math.ceil(Math.max(ay, by) + ext));
+  if (x0 > x1 || y0 > y1) return;
+  const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy;
+  for (let y = y0; y <= y1; y++) {
+    const row = y * SW;
+    for (let x = x0; x <= x1; x++) {
+      let t = L2 > 0 ? ((x - ax) * dx + (y - ay) * dy) / L2 : 0;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const qx = ax + dx * t - x, qy = ay + dy * t - y, r2 = qx * qx + qy * qy;
+      const R = Ra + (Rb - Ra) * t, R2 = R * R, base = baseA + (baseB - baseA) * t;
+      const k = P.blend * 0.8 * R, i = row + x;
+      if (add) {
+        const z = base * 0.9;
+        const v = r2 < R2 ? z + Math.sqrt(R2 - r2) : z - (Math.sqrt(r2) - R) * 2;
+        if (v <= layer[i]) continue;
+        layer[i] = v;
+        hf[i] = smax(snap[i], v, k * Math.min(1, snap[i] / (0.3 * R)));
+      } else {
+        const z = base + 0.4 * R;
+        const v = r2 < R2 ? z - Math.sqrt(R2 - r2) : z + (Math.sqrt(r2) - R) * 2;
+        if (v >= layer[i]) continue;
+        layer[i] = v;
+        hf[i] = Math.max(0, smin(snap[i], v, k));
+      }
+    }
+  }
+  markDirty(x0, y0, x1, y1);
+}
+const dab = (x, y, R) => segment(x, y, R, x, y, R);
+
+// stroke from (ax, ay) to (bx, by), split so the drape stays smooth
+function strokeTo(ax, ay, Ra, bx, by, Rb) {
+  const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / Math.max(2, Math.min(Ra, Rb) * 0.6)));
+  for (let i = 0; i < n; i++) {
+    const f0 = i / n, f1 = (i + 1) / n;
+    segment(ax + (bx - ax) * f0, ay + (by - ay) * f0, Ra + (Rb - Ra) * f0,
+            ax + (bx - ax) * f1, ay + (by - ay) * f1, Ra + (Rb - Ra) * f1);
+  }
+}
+
+// a polyline; radiusAt(t) gets the arc-length fraction
+function drawPath(pts, radiusAt) {
+  let total = 0;
+  for (let i = 1; i < pts.length; i++)
+    total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+  if (pts.length === 1 || !total) { dab(pts[0][0], pts[0][1], radiusAt(0)); return; }
+  let run = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const [ax, ay] = pts[i - 1], [bx, by] = pts[i];
+    const len = Math.hypot(bx - ax, by - ay);
+    strokeTo(ax, ay, radiusAt(run / total), bx, by, radiusAt((run + len) / total));
+    run += len;
+  }
+}
+
+/* --------------------------- compositions -----------------------
+   R deals a fresh arrangement so the canvas never starts empty:
+   a hero spiral or ring, a few wandering coils draped across it,
+   then beads dropped on top.
+---------------------------------------------------------------- */
+// the open canvas right of the panel, in field px
+function freeArea() {
+  const mx = SW * 0.1, my = SH * 0.12;
+  return { mx, my, ml: Math.max(mx, W > 760 ? 290 * SIM : 0) };
+}
+
+function compose(recordUndo = true) {
+  if (recordUndo) pushUndo(hf.slice());
+  hf.fill(0); markAll();
+  const rnd = Math.random, S = Math.min(SW, SH);
+  const { mx, my, ml } = freeArea();
+  const cx = (ml + SW - mx) / 2, cy = SH / 2;
+  const coil = S * (0.026 + rnd() * 0.014);
+
+  beginStroke('add', false);
+  if (rnd() < 0.55) {
+    const turns = 1.8 + rnd() * 1.4, r1 = S * (0.17 + rnd() * 0.08), a0 = rnd() * 6.283;
+    const ox = cx + (rnd() - 0.5) * S * 0.3, oy = cy + (rnd() - 0.5) * S * 0.16;
+    const dir = rnd() < 0.5 ? 1 : -1, pts = [];
+    for (let i = 0; i <= 400; i++) {
+      const t = i / 400, a = a0 + dir * t * turns * 6.283, r = r1 * (0.1 + 0.9 * t);
+      pts.push([ox + Math.cos(a) * r, oy + Math.sin(a) * r]);
+    }
+    drawPath(pts, t => coil * (0.55 + 0.45 * Math.min(1, t * 5)));
+  } else {
+    const r = S * (0.15 + rnd() * 0.1), squash = 0.75 + rnd() * 0.25, pts = [];
+    const ox = cx + (rnd() - 0.5) * S * 0.3, oy = cy + (rnd() - 0.5) * S * 0.16;
+    for (let i = 0; i <= 300; i++) {
+      const a = i / 300 * 6.2832;
+      pts.push([ox + Math.cos(a) * r, oy + Math.sin(a) * r * squash]);
+    }
+    drawPath(pts, () => coil * 1.35);
+  }
+  endStroke();
+
+  const squiggles = 2 + (rnd() * 2 | 0);
+  for (let n = 0; n < squiggles; n++) {
+    let x = ml + rnd() * (SW - ml - mx), y = my + rnd() * (SH - 2 * my);
+    let a = rnd() * 6.283;
+    const len = S * (0.35 + rnd() * 0.45), steps = 160, ph = rnd() * 6.283;
+    const bend = (rnd() - 0.5) * 0.03, wob = 0.02 + rnd() * 0.05;
+    const pts = [[x, y]];
+    for (let i = 0; i < steps; i++) {
+      a += bend + Math.sin(i * 0.09 + ph) * wob;
+      x += Math.cos(a) * len / steps; y += Math.sin(a) * len / steps;
+      if (x < ml || x > SW - mx) a = Math.PI - a;
+      if (y < my || y > SH - my) a = -a;
+      pts.push([x, y]);
+    }
+    const r = coil * (0.7 + rnd() * 0.6);
+    beginStroke('add', false);
+    drawPath(pts, t => r * (0.55 + 0.45 * Math.pow(Math.sin(Math.PI * t), 0.5)));
+    endStroke();
+  }
+
+  const beads = 4 + (rnd() * 6 | 0);
+  for (let n = 0; n < beads; n++) {
+    const r = S * (0.012 + rnd() * rnd() * 0.06);
+    beginStroke('add', false);
+    dab(ml + rnd() * (SW - ml - mx), my + rnd() * (SH - 2 * my), r);
+    endStroke();
+  }
+}
+
+/* ---------------------------- puffy type ------------------------
+   Text is drawn into a mask at 2× field resolution; an exact
+   Euclidean distance transform gives a sub-pixel signed distance to
+   the letter edges. That seeds a Poisson solve (∇²u = −2 inside,
+   u = 0 outside): h = √u makes every stroke a round tube whatever
+   its width and every joint a dome — the balloon look, without the
+   crease a raw distance field leaves along each stroke's spine.
+---------------------------------------------------------------- */
+function edt(target, w, h) {
+  // squared distance from every pixel to the nearest target pixel
+  // (Felzenszwalb & Huttenlocher: 1D lower envelopes, cols then rows)
+  const INF = 1e20, n = Math.max(w, h);
+  const out = new Float64Array(w * h);
+  const f = new Float64Array(n), d = new Float64Array(n), v = new Int32Array(n), z = new Float64Array(n + 1);
+  const pass = len => {
+    let k = 0; v[0] = 0; z[0] = -INF; z[1] = INF;
+    for (let q = 1; q < len; q++) {
+      let s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+      while (s <= z[k]) { k--; s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]); }
+      k++; v[k] = q; z[k] = s; z[k + 1] = INF;
+    }
+    k = 0;
+    for (let q = 0; q < len; q++) {
+      while (z[k + 1] < q) k++;
+      d[q] = (q - v[k]) * (q - v[k]) + f[v[k]];
+    }
+  };
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) f[y] = target[y * w + x] ? 0 : INF;
+    pass(h);
+    for (let y = 0; y < h; y++) out[y * w + x] = d[y];
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) f[x] = out[y * w + x];
+    pass(w);
+    for (let x = 0; x < w; x++) out[y * w + x] = d[x];
+  }
+  return out;
+}
+
+const FONT = 'ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", ui-sans-serif, system-ui, sans-serif';
+function stampText(str) {
+  str = str.trim();
+  if (!str || !SW) return;
+  const SS = 2, w = SW * SS, h = SH * SS;
+  const oc = document.createElement('canvas');
+  oc.width = w; oc.height = h;
+  const o = oc.getContext('2d', { willReadFrequently: true });
+  const { mx, ml } = freeArea();
+  let size = h * 0.4;
+  o.font = `900 ${size}px ${FONT}`;
+  size = Math.min(size, size * (SW - ml - mx) * SS * 0.95 / Math.max(1, o.measureText(str).width));
+  o.font = `900 ${size}px ${FONT}`;
+  o.textAlign = 'center'; o.textBaseline = 'middle';
+  o.fillStyle = '#fff';
+  o.fillText(str, (ml + SW - mx) / 2 * SS, h / 2);
+  const a = o.getImageData(0, 0, w, h).data;
+  const inside = new Uint8Array(w * h), outside = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) { inside[i] = a[i * 4 + 3] > 127; outside[i] = !inside[i]; }
+  const dIn = edt(outside, w, h), dOut = edt(inside, w, h);
+
+  // signed distance (inside +) box-filtered down to field resolution
+  const sd = new Float32Array(SW * SH);
+  let maxD = 0;
+  for (let y = 0; y < SH; y++) for (let x = 0; x < SW; x++) {
+    let s = 0;
+    for (let j = 0; j < SS; j++) for (let i = 0; i < SS; i++) {
+      const q = (y * SS + j) * w + x * SS + i;
+      s += inside[q] ? Math.sqrt(dIn[q]) - 0.5 : 0.5 - Math.sqrt(dOut[q]);
+    }
+    const dd = s / (SS * SS) / SS;
+    sd[y * SW + x] = dd;
+    if (dd > maxD) maxD = dd;
+  }
+
+  // seed with a round-edged profile, then relax (SOR) toward the
+  // Poisson solution inside the letters' bounding box
+  const R = Math.max(2, maxD), k = P.blend * 0.8 * R;
+  const u = new Float32Array(SW * SH);
+  let bx0 = SW, bx1 = -1, by0 = SH, by1 = -1;
+  for (let y = 0; y < SH; y++) for (let x = 0; x < SW; x++) {
+    const i = y * SW + x, d = sd[i];
+    if (d <= 0) continue;
+    u[i] = d >= R ? R * R : d * (2 * R - d);
+    bx0 = Math.min(bx0, x); bx1 = Math.max(bx1, x);
+    by0 = Math.min(by0, y); by1 = Math.max(by1, y);
+  }
+  const omega = 2 / (1 + Math.sin(Math.PI / Math.max(4, 2 * R)));
+  for (let it = 0; it < 220; it++) {
+    for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
+      const i = y * SW + x;
+      if (sd[i] <= 0) continue;
+      const nb = (x > 0 ? u[i - 1] : 0) + (x < SW - 1 ? u[i + 1] : 0) +
+                 (y > 0 ? u[i - SW] : 0) + (y < SH - 1 ? u[i + SW] : 0);
+      u[i] += omega * ((nb + 2) / 4 - u[i]);
+    }
+  }
+  beginStroke('add');
+  for (let i = 0; i < SW * SH; i++) {
+    const d = sd[i];
+    const v = d <= 0 ? d * 2 : Math.sqrt(Math.max(0, u[i]));
+    if (v < -k) continue;
+    hf[i] = smax(snap[i], v, k * Math.min(1, snap[i] / (0.3 * R)));
+  }
+  endStroke();
+  markAll();
+}
+
+/* ------------------------------ light ---------------------------
+   Directional light in field space: x right, y down, z toward the
+   viewer. While hovering, the cursor *is* the lamp: its direction
+   from the centre sets the azimuth, its distance lowers the light
+   from overhead (flat, soft) to raking (long shadows).
+---------------------------------------------------------------- */
+const light = { ang: -2.25, el: 0.8, tAng: -2.25, tEl: 0.8 };
+const followEl = document.getElementById('follow');
+function aimLight(x, y) {
+  if (!followEl.checked) return;
+  const dx = x - W / 2, dy = y - H / 2;
+  const dist = Math.min(1, Math.hypot(dx, dy) / (0.5 * Math.min(W, H)));
+  light.tAng = Math.atan2(dy, dx);
+  light.tEl = 1.35 - 0.95 * dist;
+}
+function easeLight() {
+  const dA = Math.atan2(Math.sin(light.tAng - light.ang), Math.cos(light.tAng - light.ang));
+  const dE = light.tEl - light.el;
+  if (Math.abs(dA) < 1e-4 && Math.abs(dE) < 1e-4) return;
+  light.ang += dA * 0.18; light.el += dE * 0.18;
+  needsRender = true;
+}
+
+/* ----------------------------- shaders --------------------------- */
+const VS = `#version 300 es
+void main() {
+  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+// pass 1, at field resolution: soft shadow + ambient occlusion
+const FS_LIGHT = `#version 300 es
+precision highp float;
+uniform sampler2D uField;
+uniform vec2 uSize;
+uniform vec3 uL;
+uniform float uDepth;
+out vec4 o;
+
+float Hgt(vec2 px) { return texture(uField, px / uSize).b * uDepth; }
+float hash(vec2 p) {
+  vec3 q = fract(vec3(p.xyx) * 0.1031);
+  q += dot(q, q.yzx + 33.33);
+  return fract((q.x + q.y) * q.z);
+}
+
+void main() {
+  vec2 px = gl_FragCoord.xy;
+  float h0 = Hgt(px);
+  float j = hash(px);
+
+  // march toward the light; keep the tightest clearance angle
+  float sh = 1.0;
+  float lxy = length(uL.xy);
+  if (lxy > 1e-3) {
+    vec2 dir = uL.xy / lxy;
+    float rise = uL.z / lxy;
+    float t = 0.6 + 0.6 * j;
+    for (int i = 0; i < 40; i++) {
+      vec2 p = px + dir * t;
+      if (p.x < 0.0 || p.y < 0.0 || p.x > uSize.x || p.y > uSize.y) break;
+      float d = h0 + 0.35 + t * rise - Hgt(p);
+      sh = min(sh, clamp(4.0 * d / t, 0.0, 1.0));
+      if (sh <= 0.0) break;
+      t = t * 1.12 + 0.6;
+    }
+  }
+
+  // how much of the nearby horizon rises above this point
+  float occ = 0.0;
+  for (int i = 0; i < 12; i++) {
+    float a = (float(i) + 0.5) * 0.5235988;
+    vec2 d = vec2(cos(a), sin(a));
+    occ += clamp((Hgt(px + d * 3.0) - h0) / 3.0, 0.0, 1.0);
+    occ += clamp((Hgt(px + d * 9.0) - h0) / 9.0, 0.0, 1.0);
+    occ += clamp((Hgt(px + d * 24.0) - h0) / 24.0, 0.0, 1.0);
+  }
+  o = vec4(sh, 1.0 - occ / 36.0, 0.0, 1.0);
+}`;
+
+// pass 2, at full resolution: the materials
+const FS_SHADE = `#version 300 es
+precision highp float;
+uniform sampler2D uField;
+uniform sampler2D uLit;
+uniform vec2 uRes;
+uniform float uDpr;
+uniform vec3 uL;
+uniform float uLAng;
+uniform float uLEl;
+uniform float uDepth;
+uniform float uFinish;
+uniform int uMat;
+uniform vec3 uInk;
+uniform vec3 uPaper;
+out vec4 outColor;
+
+float hash(vec2 p) {
+  vec3 q = fract(vec3(p.xyx) * 0.1031);
+  q += dot(q, q.yzx + 33.33);
+  return fract((q.x + q.y) * q.z);
+}
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x),
+             mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float fbm(vec2 p) {
+  float s = 0.0, a = 0.5;
+  for (int i = 0; i < 4; i++) { s += a * vnoise(p); p = p * 2.03 + 17.1; a *= 0.5; }
+  return s;
+}
+
+// micro relief per material, in CSS px of height
+float detail(vec2 p) {
+  if (uMat == 0) {        // clay: grog grain + hand-made lumpiness
+    return uFinish * (0.5 * vnoise(p * 0.85) + 0.25 * vnoise(p * 2.3) + 6.0 * fbm(p * 0.03));
+  } else if (uMat == 1) { // metal: brushed streaks that polish away
+    float b = (1.0 - uFinish) * (1.0 - uFinish);
+    return b * (0.5 * vnoise(vec2(p.x * 0.01, p.y * 0.3)) + 0.15 * vnoise(vec2(p.x * 0.03, p.y * 0.9)));
+  }
+  return (1.0 - uFinish) * 0.5 * fbm(p * 0.22); // plastic: orange peel when matte
+}
+
+vec3 toLin(vec3 c) { return pow(c, vec3(2.2)); }
+float box(float x, float hw, float w) { return 1.0 - smoothstep(hw - w, hw + w, abs(x)); }
+float wrapPi(float a) { return mod(a + 3.1415927, 6.2831853) - 3.1415927; }
+
+// soft highlight roll-off so bright materials don't clip flat
+vec3 knee(vec3 c) {
+  vec3 k = vec3(0.8);
+  return mix(c, k + 0.2 * (1.0 - exp(-(c - k) / 0.2)), step(k, c));
+}
+
+// a procedural photo studio around the piece: bright sky down to a
+// crisp horizon, the paper as the floor below it (so rims pick up the
+// ground color), a key softbox wherever the light is, a strip light
+// opposite, a side kicker, and a dim ceiling over the lens
+vec3 studio(vec3 R, float rough, float keyVis, vec3 paper) {
+  float az = wrapPi(atan(R.y, R.x) - uLAng);
+  float el = asin(clamp(R.z, -1.0, 1.0));
+  float w = 0.02 + rough * 0.7;
+  float e = 1.0 / (1.0 + rough * 3.0);
+  vec3 c = vec3(mix(0.9, 0.14, smoothstep(0.0, 1.0, el)));
+  c += 0.45 * e * box(el - 1.18, 0.07, w);
+  c += 5.0 * e * keyVis * box(az, 0.42, w) * box(el - uLEl, 0.3, w);
+  c += 1.2 * e * box(wrapPi(az - 3.1415927), 0.12, w) * box(el - 0.55, 0.55, w);
+  c += 0.7 * e * box(wrapPi(az - 1.75), 0.05, w) * box(el - 0.3, 0.35, w);
+  vec3 floorC = paper * mix(0.6, 0.18, smoothstep(0.0, 1.2, -el));
+  return mix(floorC, c, smoothstep(-w, w, el));
+}
+
+void main() {
+  vec2 fc = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+  vec2 uv = fc / uRes;
+  vec4 f = texture(uField, uv);
+  // shadow + AO were computed at field resolution: a 4-tap tent
+  // filter on the way up hides their texel grain
+  vec2 lt = 0.5 / vec2(textureSize(uLit, 0));
+  vec2 lit = 0.25 * (texture(uLit, uv + vec2(-lt.x, -lt.y)).rg + texture(uLit, uv + vec2(lt.x, -lt.y)).rg +
+                     texture(uLit, uv + vec2(-lt.x, lt.y)).rg + texture(uLit, uv + vec2(lt.x, lt.y)).rg);
+  float sh = lit.r, ao = lit.g;
+  vec2 p = fc / uDpr;
+
+  vec3 ink = toLin(uInk), paper = toLin(uPaper);
+  float m = clamp(0.5 + f.a / max(fwidth(f.a), 1e-4), 0.0, 1.0);  // sub-texel silhouette
+
+  // ground: paper with cast shadow, contact occlusion, a little bounce
+  vec3 ground = paper * (0.42 + 0.58 * sh) * (0.3 + 0.7 * ao) + paper * ink * (1.0 - ao) * 0.5;
+  vec3 col = ground;
+
+  if (m > 0.0) {
+    float d0 = detail(p);
+    vec2 gd = vec2(detail(p + vec2(0.5, 0.0)) - d0, detail(p + vec2(0.0, 0.5)) - d0) * 2.0;
+    vec3 N = normalize(vec3(-(f.rg * uDepth + gd), 1.0));
+    vec3 V = vec3(0.0, 0.0, 1.0);
+    vec3 L = uL;
+    vec3 Hv = normalize(L + V);
+    float ndl = dot(N, L), lam = max(ndl, 0.0);
+    float ndh = max(dot(N, Hv), 0.0);
+    vec3 R = reflect(-V, N);
+    float fres = pow(1.0 - max(N.z, 0.0), 5.0);
+    vec3 amb = mix(paper * 0.8, vec3(0.8, 0.84, 0.92), 0.5 + 0.5 * N.z) * 0.35;
+    vec3 mc;
+
+    if (uMat == 0) {
+      // clay: wrapped diffuse, light bleeding through the rims, grog specks
+      vec3 alb = ink;
+      vec2 cell = floor(p * 0.8);
+      float speck = step(0.94, hash(cell)) * uFinish;
+      alb *= 1.0 + speck * (hash(cell + 7.0) > 0.5 ? 0.35 : -0.4);
+      float wr = max(0.0, (ndl + 0.45) / 1.45);
+      mc = alb * (1.1 * wr * sh + amb * (0.4 + 0.6 * ao));
+      mc += alb * alb * 0.6 * max(wr - lam, 0.0) * sh;
+      mc += vec3(0.05 * (1.0 - 0.7 * uFinish)) * pow(ndh, 14.0) * sh;
+      mc *= mix(1.0, ao, 0.45);
+    } else if (uMat == 1) {
+      // metal: all reflection, tinted by the ink; polish sharpens it
+      float rough = (1.0 - uFinish) * 0.45 + 0.02;
+      vec3 F0 = mix(vec3(0.16), vec3(1.0), ink);
+      vec3 F = F0 + (1.0 - F0) * fres;
+      mc = studio(R, rough, sh, paper) * F * (0.35 + 0.65 * ao);
+      float a = max(rough * rough, 0.002), a2 = a * a;
+      float dd = ndh * ndh * (a2 - 1.0) + 1.0;
+      mc += F0 * min(a2 / (3.1415927 * dd * dd), 60.0) * 0.25 * lam * sh;
+    } else {
+      // plastic: dyed diffuse body under a clear glossy coat
+      float rough = mix(0.5, 0.07, uFinish);
+      mc = ink * (0.95 * lam * sh + amb * ao);
+      float a = rough * rough, a2 = a * a;
+      float dd = ndh * ndh * (a2 - 1.0) + 1.0;
+      float spec = min(a2 / (3.1415927 * dd * dd), 80.0) * 0.25;
+      float fh = 0.04 + 0.96 * pow(1.0 - max(dot(L, Hv), 0.0), 5.0);
+      mc += vec3(spec * fh * 8.0) * lam * sh;
+      mc += studio(R, rough * 0.8, sh, paper) * (0.04 + 0.96 * fres) * (0.5 + 0.5 * uFinish) * (0.4 + 0.6 * ao);
+    }
+    col = mix(ground, knee(mc), m);
+  }
+
+  col = pow(max(col, 0.0), vec3(1.0 / 2.2));
+  col += (hash(fc + 0.5) - 0.5) / 255.0;  // dither away banding
+  outColor = vec4(col, 1.0);
+}`;
+
+let progLight, progShade, uLight, uShade, texField, texLit, fbo;
+if (gl) {
+  const compile = (type, src) => {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  };
+  const program = fs => {
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(gl.VERTEX_SHADER, VS));
+    gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    return p;
+  };
+  const locs = (p, names) => Object.fromEntries(names.map(n => [n, gl.getUniformLocation(p, n)]));
+  progLight = program(FS_LIGHT);
+  progShade = program(FS_SHADE);
+  uLight = locs(progLight, ['uField', 'uSize', 'uL', 'uDepth']);
+  uShade = locs(progShade, ['uField', 'uLit', 'uRes', 'uDpr', 'uL', 'uLAng', 'uLEl',
+                            'uDepth', 'uFinish', 'uMat', 'uInk', 'uPaper']);
+  texField = gl.createTexture();
+  texLit = gl.createTexture();
+  fbo = gl.createFramebuffer();
+  gl.bindVertexArray(gl.createVertexArray());
+}
+
+function setupTex(t, ifmt, fmt, type, w, h, data) {
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, w, h, 0, fmt, type, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+}
+
+// Sobel slopes for the dirty rectangle (+2 px rim), then upload it.
+// The 4th channel is a signed edge distance so silhouettes can be
+// anti-aliased below field resolution: inside, h / |∇h| (≈ 2× the
+// distance to the rim for a round profile); outside, an inside
+// neighbour's value minus one texel, so the zero crossing lands
+// between texels where the true edge is instead of on the grid.
+function upload() {
+  if (dirty.x1 < 0) return;
+  const x0 = Math.max(0, dirty.x0 - 2), y0 = Math.max(0, dirty.y0 - 2);
+  const x1 = Math.min(SW - 1, dirty.x1 + 2), y1 = Math.min(SH - 1, dirty.y1 + 2);
+  for (let y = y0; y <= y1; y++) {
+    const ym = (y > 0 ? y - 1 : 0) * SW, yc = y * SW, yp = (y < SH - 1 ? y + 1 : y) * SW;
+    for (let x = x0; x <= x1; x++) {
+      const xm = x > 0 ? x - 1 : 0, xp = x < SW - 1 ? x + 1 : x;
+      const j = (yc + x) * 4, h = hf[yc + x];
+      const gx = (hf[ym + xp] + 2 * hf[yc + xp] + hf[yp + xp] - hf[ym + xm] - 2 * hf[yc + xm] - hf[yp + xm]) / 8;
+      const gy = (hf[yp + xm] + 2 * hf[yp + x] + hf[yp + xp] - hf[ym + xm] - 2 * hf[ym + x] - hf[ym + xp]) / 8;
+      tex4[j] = gx; tex4[j + 1] = gy; tex4[j + 2] = h;
+      tex4[j + 3] = h > 0.05 ? Math.min(4, h * 4, h / Math.max(1e-3, Math.hypot(gx, gy))) : -2;
+    }
+  }
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const j = (y * SW + x) * 4;
+    if (tex4[j + 3] > 0) continue;
+    let e = -2;
+    if (x > 0 && tex4[j - 1] > 0) e = Math.max(e, tex4[j - 1] - 2);
+    if (x < SW - 1 && tex4[j + 7] > 0) e = Math.max(e, tex4[j + 7] - 2);
+    if (y > 0 && tex4[j - SW * 4 + 3] > 0) e = Math.max(e, tex4[j - SW * 4 + 3] - 2);
+    if (y < SH - 1 && tex4[j + SW * 4 + 3] > 0) e = Math.max(e, tex4[j + SW * 4 + 3] - 2);
+    tex4[j + 3] = Math.min(-0.25, e);
+  }
+  dirty.x0 = dirty.y0 = Infinity; dirty.x1 = dirty.y1 = -1;
+  if (!gl) return;
+  gl.bindTexture(gl.TEXTURE_2D, texField);
+  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, SW);
+  gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, x0);
+  gl.pixelStorei(gl.UNPACK_SKIP_ROWS, y0);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, x1 - x0 + 1, y1 - y0 + 1, gl.RGBA, gl.FLOAT, tex4);
+  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+}
+
+function render() {
+  const L = [Math.cos(light.ang) * Math.cos(light.el), Math.sin(light.ang) * Math.cos(light.el), Math.sin(light.el)];
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.viewport(0, 0, SW, SH);
+  gl.useProgram(progLight);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texField);
+  gl.uniform1i(uLight.uField, 0);
+  gl.uniform2f(uLight.uSize, SW, SH);
+  gl.uniform3fv(uLight.uL, L);
+  gl.uniform1f(uLight.uDepth, P.depth);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(progShade);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texLit);
+  gl.uniform1i(uShade.uField, 0);
+  gl.uniform1i(uShade.uLit, 1);
+  gl.uniform2f(uShade.uRes, canvas.width, canvas.height);
+  gl.uniform1f(uShade.uDpr, canvas.width / W);
+  gl.uniform3fv(uShade.uL, L);
+  gl.uniform1f(uShade.uLAng, light.ang);
+  gl.uniform1f(uShade.uLEl, light.el);
+  gl.uniform1f(uShade.uDepth, P.depth);
+  gl.uniform1f(uShade.uFinish, finish[VARIANTS[current].key]);
+  gl.uniform1i(uShade.uMat, current);
+  gl.uniform3fv(uShade.uInk, rgb01(C.ink));
+  gl.uniform3fv(uShade.uPaper, rgb01(C.paper));
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+
+  // keep the sculpture centred at its pixel size when the window changes
+  const nw = Math.max(1, Math.round(W * SIM)), nh = Math.max(1, Math.round(H * SIM));
+  const next = new Float32Array(nw * nh);
+  const ox = Math.round((nw - SW) / 2), oy = Math.round((nh - SH) / 2);
+  for (let y = 0; y < SH; y++) {
+    const ny = y + oy;
+    if (ny < 0 || ny >= nh) continue;
+    for (let x = 0; x < SW; x++) {
+      const nx = x + ox;
+      if (nx >= 0 && nx < nw) next[ny * nw + nx] = hf[y * SW + x];
+    }
+  }
+  const first = SW === 0;
+  hf = next; SW = nw; SH = nh;
+  tex4 = new Float32Array(SW * SH * 4);
+  layer = new Float32Array(SW * SH);
+  undo = []; snap = null; stroke = null;
+  if (gl) {
+    setupTex(texField, gl.RGBA16F, gl.RGBA, gl.FLOAT, SW, SH, null);
+    setupTex(texLit, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, SW, SH, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texLit, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+  if (first) compose(false);
+  markAll();
+  sizeRing();
+}
+
+/* ---------------------------- sculpting -------------------------- */
+let stroke = null;
+const ring = document.getElementById('ring');
+function sizeRing() {
+  const d = P.brush * 2;
+  ring.style.width = ring.style.height = d + 'px';
+  ring.style.marginLeft = ring.style.marginTop = -d / 2 + 'px';
+}
+const radiusFor = e => P.brush * SIM * (e.pointerType === 'pen' && e.pressure > 0 ? 0.3 + 0.7 * e.pressure : 1);
+
+canvas.addEventListener('pointerdown', e => {
+  if (e.button !== 0 || !SW) return;  // right-click keeps the browser's save menu
+  canvas.setPointerCapture(e.pointerId);
+  beginStroke(e.shiftKey || e.altKey ? 'carve' : 'add');
+  stroke = { x: e.clientX * SIM, y: e.clientY * SIM, R: radiusFor(e) };
+  dab(stroke.x, stroke.y, stroke.R);
+});
+canvas.addEventListener('pointermove', e => {
+  ring.style.display = 'block';
+  ring.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`;
+  ring.classList.toggle('carve', stroke ? strokeMode === 'carve' : e.shiftKey);
+  if (!stroke) { aimLight(e.clientX, e.clientY); return; }
+  const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+  for (const ev of events.length ? events : [e]) {
+    const x = ev.clientX * SIM, y = ev.clientY * SIM, R = radiusFor(ev);
+    strokeTo(stroke.x, stroke.y, stroke.R, x, y, R);
+    stroke.x = x; stroke.y = y; stroke.R = R;
+  }
+});
+const finishStroke = () => { if (stroke) { stroke = null; endStroke(); } };
+canvas.addEventListener('pointerup', finishStroke);
+canvas.addEventListener('pointercancel', finishStroke);
+canvas.addEventListener('pointerleave', () => { if (!stroke) ring.style.display = 'none'; });
+
+document.getElementById('regen').onclick = () => compose();
+document.getElementById('clear').onclick = () => { pushUndo(hf.slice()); hf.fill(0); markAll(); };
+const wordEl = document.getElementById('word');
+document.getElementById('stamp').onclick = () => stampText(wordEl.value);
+wordEl.addEventListener('keydown', e => { if (e.key === 'Enter') stampText(wordEl.value); });
+
+/* --------------------------- switcher ---------------------------
+   One variant per material. Finish is the material's own dial —
+   grain for clay, polish for metal, gloss for plastic — and each
+   material remembers its setting.
+---------------------------------------------------------------- */
+const VARIANTS = [
+  { key: 'A', name: 'Clay',    finish: 'Grain' },
+  { key: 'B', name: 'Metal',   finish: 'Polish' },
+  { key: 'C', name: 'Plastic', finish: 'Gloss' },
+];
+const finish = { A: 0.5, B: 0.9, C: 0.85 };
+const finishEl = document.getElementById('finish');
+finishEl.addEventListener('input', e => { finish[VARIANTS[current].key] = +e.target.value; needsRender = true; });
+let current = Math.max(0, VARIANTS.findIndex(v =>
+  v.key === new URLSearchParams(location.search).get('variant')));
+
+function setVariant(i) {
+  current = (i + VARIANTS.length) % VARIANTS.length;
+  const v = VARIANTS[current];
+  document.getElementById('label').textContent = `${v.key} — ${v.name}`;
+  document.getElementById('variant-title').textContent = v.name;
+  document.getElementById('finish-label').textContent = v.finish;
+  finishEl.value = finish[v.key];
+  needsRender = true;
+  try { // history API is unavailable on some file:// setups — switching still works
+    const url = new URL(location.href);
+    url.searchParams.set('variant', v.key);
+    history.replaceState(null, '', url);
+  } catch {}
+}
+document.getElementById('prev').onclick = () => setVariant(current - 1);
+document.getElementById('next').onclick = () => setVariant(current + 1);
+window.addEventListener('keydown', e => {
+  if (e.key === 'Shift' && !stroke) ring.classList.add('carve');
+  if (/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); doUndo(); return; }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === 'ArrowLeft') setVariant(current - 1);
+  if (e.key === 'ArrowRight') setVariant(current + 1);
+  if (e.key === 'r' || e.key === 'R') compose();
+  if (e.key === 'c' || e.key === 'C') { pushUndo(hf.slice()); hf.fill(0); markAll(); }
+  if (e.key === 'l' || e.key === 'L') followEl.checked = !followEl.checked;
+});
+window.addEventListener('keyup', e => { if (e.key === 'Shift' && !stroke) ring.classList.remove('carve'); });
+
+window.addEventListener('resize', resize);
+setVariant(current);
+resize();
+
+/* -------------------------- render loop -------------------------
+   Draws only when something changed: a stroke, a slider, a color,
+   or the light still easing toward the cursor.
+---------------------------------------------------------------- */
+(function frame() {
+  easeLight();
+  upload();
+  if (gl && needsRender) { render(); needsRender = false; }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

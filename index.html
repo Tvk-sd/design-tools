@@ -91,6 +91,16 @@
         </div>
       </a>
     </li>
+    <li>
+      <a class="tool" href="tools/material-forms/index.html" data-preview="relief"
+         style="--paper:#ffd966; --ink:#33200a;">
+        <canvas aria-hidden="true"></canvas>
+        <div class="txt">
+          <strong>Material Forms</strong>
+          <span>Strokes inflate into 2.5D coils, beads and puffy type — in clay, metal or plastic. The light follows your cursor.</span>
+        </div>
+      </a>
+    </li>
     <!-- Add the next tool here: copy a tools/<name>/index.html, one <li>,
          and a mini preview in the PREVIEWS map below -->
   </ul>
@@ -296,6 +306,98 @@ const PREVIEWS = {
         for (const b of bodies) ctx.fillText(b.ch, b.x, b.y);
       },
       warm() { this.step(); },
+    };
+  },
+
+  relief(ctx, duo, getCur) {
+    // a chrome ring and two beads as an analytic height field, shaded
+    // per pixel against a tiny studio; the light orbits, or comes from
+    // the cursor while hovering (same rule as the tool)
+    const Q = Math.min(2, Math.max(1, Math.round(window.devicePixelRatio || 1))), M = SZ * Q;
+    const buf = document.createElement('canvas');
+    buf.width = buf.height = M;
+    const bctx = buf.getContext('2d');
+    const img = bctx.createImageData(M, M), px = img.data;
+    const hgt = new Float32Array(M * M);
+    for (let y = 0; y < M; y++) for (let x = 0; x < M; x++) {
+      const fx = (x + 0.5) / Q, fy = (y + 0.5) / Q;
+      let h = 0;
+      const rr = Math.hypot(fx - 42, fy - 54) - 24;
+      if (Math.abs(rr) < 10) h = Math.sqrt(100 - rr * rr);
+      for (const [bx, by, br] of [[74, 25, 12], [77, 67, 6]]) {
+        const r2 = (fx - bx) ** 2 + (fy - by) ** 2;
+        if (r2 < br * br) h = Math.max(h, Math.sqrt(br * br - r2));
+      }
+      hgt[y * M + x] = h;
+    }
+    const nrm = new Float32Array(M * M * 3);
+    for (let y = 0; y < M; y++) for (let x = 0; x < M; x++) {
+      const at = (i, j) => hgt[Math.min(M - 1, Math.max(0, j)) * M + Math.min(M - 1, Math.max(0, i))];
+      const gx = (at(x + 1, y) - at(x - 1, y)) * Q / 2, gy = (at(x, y + 1) - at(x, y - 1)) * Q / 2;
+      const l = Math.hypot(gx, gy, 1), k = (y * M + x) * 3;
+      nrm[k] = -gx / l; nrm[k + 1] = -gy / l; nrm[k + 2] = 1 / l;
+    }
+    // contact occlusion on the paper: how much form sits nearby
+    const occ = new Float32Array(M * M), rad = 5 * Q;
+    for (let y = 0; y < M; y++) for (let x = 0; x < M; x++) {
+      let s = 0, n = 0;
+      for (let j = -rad; j <= rad; j += Q) for (let i = -rad; i <= rad; i += Q) {
+        const xx = x + i, yy = y + j;
+        if (xx < 0 || yy < 0 || xx >= M || yy >= M) continue;
+        s += Math.min(1, hgt[yy * M + xx] / 4); n++;
+      }
+      occ[y * M + x] = 1 - 0.55 * s / n;
+    }
+    const lin = c => rgbOf(c).map(v => (v / 255) ** 2.2);
+    const ink = lin(duo.ink), paper = lin(duo.paper);
+    const F0 = ink.map(v => 0.16 + 0.84 * v);
+    const srgb = new Uint8Array(4096).map((_, i) => Math.round(255 * (i / 4095) ** (1 / 2.2)));
+    const out = v => srgb[Math.min(4095, Math.max(0, (v < 0.8 ? v : 0.8 + 0.2 * (1 - Math.exp(-(v - 0.8) / 0.2))) * 4095 | 0))];
+    const sstep = (a, b, v) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
+    const box = (v, hw, w) => 1 - sstep(hw - w, hw + w, Math.abs(v));
+    const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
+    return {
+      step(t) {
+        const cur = getCur();
+        let ang = t * 0.5, el = 0.75;
+        if (cur) {
+          ang = Math.atan2(cur.y - SZ / 2, cur.x - SZ / 2);
+          el = 1.35 - 0.95 * Math.min(1, Math.hypot(cur.x - SZ / 2, cur.y - SZ / 2) / (SZ / 2));
+        }
+        const dx = Math.cos(ang), dy = Math.sin(ang), tanEl = Math.tan(el);
+        for (let y = 0; y < M; y++) for (let x = 0; x < M; x++) {
+          const i = y * M + x, h = hgt[i];
+          let sh = 1;
+          for (const s of [1.5, 3, 5, 8, 12, 17, 24]) {
+            const sx = Math.round(x + dx * s * Q), sy = Math.round(y + dy * s * Q);
+            if (sx < 0 || sy < 0 || sx >= M || sy >= M) break;
+            sh = Math.min(sh, Math.max(0, Math.min(1, (h + s * tanEl - hgt[sy * M + sx]) / s * 3)));
+          }
+          const o = i * 4, g = (0.42 + 0.58 * sh) * occ[i];
+          const m = Math.min(1, Math.max(0, (h - 0.2) / 1.6)); // edge coverage
+          if (m === 0) {
+            px[o] = out(paper[0] * g); px[o + 1] = out(paper[1] * g); px[o + 2] = out(paper[2] * g);
+          } else {
+            const nx = nrm[i * 3], ny = nrm[i * 3 + 1], nz = nrm[i * 3 + 2];
+            const rx = 2 * nz * nx, ry = 2 * nz * ny, rz = 2 * nz * nz - 1;
+            const re = Math.asin(Math.max(-1, Math.min(1, rz))), az = wrap(Math.atan2(ry, rx) - ang);
+            const fr = (1 - nz) ** 5;
+            let sky = 0.9 + (0.14 - 0.9) * sstep(0, 1, re) + 0.45 * box(re - 1.18, 0.07, 0.05);
+            sky += 5 * sh * box(az, 0.42, 0.05) * box(re - el, 0.3, 0.05);
+            sky += 1.2 * box(wrap(az - Math.PI), 0.12, 0.05) * box(re - 0.55, 0.55, 0.05);
+            const hz = sstep(-0.05, 0.05, re), fl = 0.6 + (0.18 - 0.6) * sstep(0, 1.2, -re);
+            for (let c = 0; c < 3; c++) {
+              const env = paper[c] * fl * (1 - hz) + sky * hz;
+              const v = env * (F0[c] + (1 - F0[c]) * fr);
+              px[o + c] = out(v * m + paper[c] * g * (1 - m));
+            }
+          }
+          px[o + 3] = 255;
+        }
+        bctx.putImageData(img, 0, 0);
+        ctx.drawImage(buf, 0, 0, SZ, SZ);
+      },
+      warm() { this.step(2.4); },
     };
   },
 };
